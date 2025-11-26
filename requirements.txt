@@ -1,0 +1,8 @@
+numpy<2.0
+PyQt5==5.15.10
+pyqtgraph==0.13.7
+PyOpenGL==3.1.7
+mediapipe==0.10.14
+opencv-python==4.10.0.84
+python-dotenv==1.0.1
+PyKinect2 @ git+https://github.com/Kinect/PyKinect2.git

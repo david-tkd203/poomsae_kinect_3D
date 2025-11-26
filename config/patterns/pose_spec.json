@@ -1,0 +1,54 @@
+{
+    "schema": "v1.1",
+    "units": {
+        "sw": "shoulder width = ||R_SH - L_SH|| (mismo frame)",
+        "rel_level": "(wrist_y - shoulder_mid_y) / (hip_mid_y - shoulder_mid_y)"
+    },
+    "tolerances": {
+        "turn_deg_tol": 30.0,
+        "arm_octant_tol": 1,
+        "dtw_good": 0.25
+    },
+    "levels": {
+        "olgul_max_rel": 0.25,
+        "arae_min_rel": 0.75,
+        "momtong_band": [0.25, 0.75]
+    },
+    "stances": {
+        "ap_kubi": {
+        "ankle_dist_min_sw": 0.30,
+        "ankle_dist_leve_sw": 0.26,
+        "front_knee_max_deg": 155.0,
+        "rear_knee_min_deg": 165.0
+        },
+        "ap_seogi": {
+        "ankle_dist_max_sw": 0.26,
+        "rear_foot_turn_min_deg": 25.0
+        },
+        "dwit_kubi": {
+        "ankle_dist_min_sw": 0.05,
+        "ankle_dist_max_sw": 0.50,
+        "hip_minus_feet_center_min": 0.020,
+        "front_knee_min_deg": 165.0,
+        "rear_knee_max_deg": 155.0
+        },
+        "beom_seogi": {
+        "ankle_dist_max_sw": 0.08,
+        "hip_minus_feet_center_min": 0.015
+        }
+    },
+    "kicks": {
+        "ap_chagi": {
+        "amp_min": 0.20,
+        "peak_above_hip_min": 0.25,
+        "plantar_min_deg": 150.0,
+        "gaze_max_deg": 35.0
+        },
+        "ttwieo_ap_chagi": {
+        "amp_min": 0.30,
+        "peak_above_hip_min": 0.30,
+        "airborne_min_frac": 0.10
+        },
+        "double_peak_max_gap_frames": 10
+    }
+}

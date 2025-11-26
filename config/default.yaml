@@ -1,0 +1,50 @@
+# config/default.yaml
+general:
+  fps: 30
+  model_path: "./data/models/rf_8yang.joblib"
+  poomsae_spec: "./config/patterns/8yang_spec.json"
+  pose_spec: "./config/patterns/pose_spec.json"
+
+segmentation:
+  speed_thresh_deg_s: 45.0
+  min_segment_frames: 3              # ✅ BAJADO de 4 a 3 (0.1s @ 30fps) - permite movimientos ULTRA rápidos
+  max_pause_frames: 2                # ✅ BAJADO de 4 a 2 - MENOS pausa entre movimientos (crítico)
+  expected_movements: 36             # ✅ CORREGIDO de 24 a 36 (segments_total, no steps_total)
+  min_duration: 0.10                 # ✅ BAJADO de 0.12 a 0.10 - permite movimientos ULTRA breves
+  max_duration: 2.0
+  sensitivity: 0.95                  # ✅ AUMENTADO de 0.9 a 0.95 - más sensible
+  # ✅ NUEVOS parámetros para umbrales adaptativos
+  peak_threshold: 0.07               # ✅ BAJADO de 0.08 a 0.07 - MÁXIMA sensibilidad a picos débiles
+  activity_threshold: 0.05           # ✅ BAJADO de 0.06 a 0.05 - threshold MÁS bajo
+  min_peak_distance: 3               # ✅ BAJADO de 4 a 3 - permite picos MUCHO MÁS cercanos
+  smooth_window: 2                   # ✅ BAJADO de 3 a 2 - menos suavizado (menos pérdida de picos)
+
+features:
+  smoothing_window: 3
+  angle_triplets:
+    elbow_left: [11,13,15]
+    elbow_right: [12,14,16]
+    knee_left: [23,25,27]
+    knee_right: [24,26,28]
+    hip_left: [11,23,25]
+    hip_right: [12,24,26]
+    shoulder: [11,12,24]
+  stat_funcs: ["mean","std","p10","p50","p90","range","max_speed","max_acc"]
+
+rules:
+  knee_depth_min_deg: 120
+  elbow_straight_max_deg: 15
+  trunk_tilt_max_deg: 20
+  jitter_max_deg_s2: 800
+
+scoring:
+  weights:
+    stance: 0.25
+    turn: 0.20
+    category: 0.10
+    active_limb: 0.10
+    kick_type: 0.15
+    timing: 0.20
+  timing_tolerance_s: 0.35
+  deduction_mild: -0.1
+  deduction_grave: -0.3

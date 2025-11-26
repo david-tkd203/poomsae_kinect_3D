@@ -1,0 +1,11 @@
+# Ignorados del proyecto
+reports/
+data/landmarks/
+data/moves_ml/
+data/previews/
+.venv/
+
+# Python bytecode / cache
+__pycache__/
+*.py[cod]
+
