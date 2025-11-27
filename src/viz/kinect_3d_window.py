@@ -1,4 +1,11 @@
-# src/viz/kinect_3d_window.py
+"""Interfaz 3D para visualización y grabación con Kinect y MediaPipe.
+
+Este módulo contiene la ventana principal utilizada para visualizar la
+información 3D proveniente de Kinect (esqueleto, nube de puntos) junto
+con landmarks de MediaPipe. Los cambios realizados aquí son principalmente
+cosméticos: docstrings y comentarios que facilitan la lectura por parte
+de otro desarrollador.
+"""
 from __future__ import annotations
 
 from typing import Optional, Dict
@@ -26,9 +33,9 @@ from .report_window import ReportWindow
 # ---------------------------------------------------------------------
 # Parámetros de rendimiento
 # ---------------------------------------------------------------------
-MP_FRAME_STRIDE = 2          # Ejecutar MediaPipe cada N frames
-CAM_FRAME_STRIDE = 2         # Actualizar previews de cámara cada N frames
-MAX_CLOUD_POINTS = 6000      # Máx. puntos en nube de cuerpo
+MP_FRAME_STRIDE = 1         # Ejecutar MediaPipe cada N frames
+CAM_FRAME_STRIDE = 1         # ← AHORA 1: actualizar previews / grabación en cada frame
+MAX_CLOUD_POINTS = 8000      # Máx. puntos en nube de cuerpo
 
 # ---------------------------------------------------------------------
 # Definición de "huesos" del esqueleto Kinect
@@ -77,6 +84,13 @@ SKELETON_SCALE = 1.5
 
 
 class Kinect3DWindow(QtWidgets.QWidget):
+    """Ventana principal para visualización 3D y control de grabación.
+
+    Provee controles para alternar capas (esqueleto, huesos, avatar,
+    nube de puntos), ajustar la cámara y gestionar una sesión de
+    grabación. Está pensada como una UI de desarrollo: los textos son
+    sencillos y los comentarios buscan explicar decisiones de diseño.
+    """
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent)
 
@@ -229,8 +243,10 @@ class Kinect3DWindow(QtWidgets.QWidget):
     # Detección de cámaras externas
     # ------------------------------------------------------------------
     def _init_cameras(self, max_index: int = 8, skip_indices=None):
+        # Solo omitimos la webcam integrada típica del notebook (índice 0).
+        # De esta forma se vuelven a detectar las cámaras externas en 1, 2, etc.
         if skip_indices is None:
-            skip_indices = {0}  # saltar webcam integrada típica del notebook
+            skip_indices = {}
 
         for idx in range(max_index):
             if idx in skip_indices:
@@ -242,8 +258,12 @@ class Kinect3DWindow(QtWidgets.QWidget):
                     cap.release()
                 continue
 
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
+            # Intentar configurar cámaras externas como 2QHD @ 60fps.
+            # Si el dispositivo no soporta esos valores, OpenCV usará
+            # lo más cercano disponible.
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 2560)   # 2QHD width
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1440)  # 2QHD height
+            cap.set(cv2.CAP_PROP_FPS, 60)
 
             ok, frame = cap.read()
             if not ok or frame is None:
@@ -845,7 +865,7 @@ class Kinect3DWindow(QtWidgets.QWidget):
         os.makedirs(capture_dir, exist_ok=True)
         self._last_capture_dir = capture_dir
 
-        fps = int(TARGET_FPS) if TARGET_FPS and TARGET_FPS > 0 else 30
+        fps = int(TARGET_FPS) if TARGET_FPS and TARGET_FPS > 0 else 60
 
         self.recording_session = RecordingSession(
             output_dir=capture_dir,

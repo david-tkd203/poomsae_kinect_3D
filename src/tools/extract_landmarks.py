@@ -120,7 +120,9 @@ def extract_for_video(
             nh = int(round(h * (resize_w / float(w))))
             img = cv2.resize(img, (resize_w, nh), interpolation=cv2.INTER_LINEAR)
 
-        # Procesar con el wrapper (espera BGR)
+        # Procesar con el wrapper (espera BGR). El wrapper devuelve
+        # normalmente (pose2d, world_landmarks), pero dejamos margen
+        # para wrappers alternativos que retornen solo pose2d.
         pose2d, _world = pose_est.process(img)
 
         # pose2d se espera shape (N_LANDMARKS, 4) = [x,y,z,visibility] normalizados

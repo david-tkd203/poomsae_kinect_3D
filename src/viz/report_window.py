@@ -9,8 +9,11 @@ from PyQt5 import QtWidgets, QtCore
 
 
 class ReportWindow(QtWidgets.QDialog):
-    """
-    Ventana simple para visualizar el reporte XLSX en una tabla.
+    """Diálogo para inspeccionar rápidamente un archivo de reporte.
+
+    Esta ventana carga una hoja Excel en memoria y la muestra en una
+    tabla no editable. Es una herramienta de visualización enfocada en
+    facilitar la revisión rápida de resultados durante el desarrollo.
     """
     def __init__(self, xlsx_path: str, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent)
@@ -20,7 +23,7 @@ class ReportWindow(QtWidgets.QDialog):
 
         layout = QtWidgets.QVBoxLayout(self)
 
-        # Cargar DataFrame
+        # Cargar DataFrame (intenta leer la primera hoja del Excel)
         try:
             df = pd.read_excel(xlsx_path)
         except Exception as e:

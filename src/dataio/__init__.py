@@ -1,8 +1,11 @@
-from pathlib import Path
-from src.dataio.report_generator import generate_report
+"""Paquete `dataio`.
 
-labels_csv = Path("data/labels/labels_gt.csv")
-preds_dir  = Path("outputs/preds_json/")   # carpeta con JSON de predicción
-out_xlsx   = Path("reports/reporte_8yang.xlsx")
+Este __init__ expone funciones útiles desde `report_generator`, pero NO debe
+ejecutar lógica al importarse. Mantener la inicialización de generación de
+reportes fuera del import evita errores al importar el paquete desde otros
+módulos (p. ej. durante la inicialización de la UI).
+"""
 
-generate_report(labels_csv, preds_dir, out_xlsx, alias="modelo_rf_v1")
+from .report_generator import generate_pal_yang_report
+
+__all__ = ["generate_pal_yang_report"]

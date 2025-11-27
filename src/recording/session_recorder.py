@@ -1,4 +1,10 @@
-# src/recording/session_recorder.py
+"""Herramientas para grabar sesiones de video y datos 3D.
+
+Este módulo agrupa utilidades para grabar streams de vídeo (con
+estimación automática del FPS) y para almacenar datos 3D de Kinect
+en un archivo `.npz` comprimido. La intención de los comentarios y
+docstrings aquí es facilitar la comprensión a un lector humano.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -15,14 +21,18 @@ class StreamInfo:
     """Metadatos básicos de un stream de vídeo."""
     name: str
     filename: str
-    fps: int
-    fourcc: str = "mp4v"  # mp4 visualizable en casi todo
+    fps: int                     # FPS objetivo (ej. 60 para tus cámaras 2QHD)
+    fourcc: str = "mp4v"         # códec preferido inicial (se intentan otros si falla)
 
 
 class StreamRecorder:
     """
     Graba un solo stream de vídeo (cualquier cámara OpenCV, incluida Kinect color).
     El tamaño de frame se infiere en la primera llamada a write().
+
+    Usa un pequeño búfer inicial para estimar el FPS real a partir del reloj
+    del sistema, de modo que la reproducción quede a ~1x aunque el bucle
+    principal no corra exactamente al FPS objetivo.
     """
     def __init__(self, info: StreamInfo, output_dir: str):
         self.info = info
@@ -32,35 +42,137 @@ class StreamRecorder:
 
         self._writer: Optional[cv2.VideoWriter] = None
         self._frame_size: Optional[Tuple[int, int]] = None
-        self._fourcc = cv2.VideoWriter_fourcc(*info.fourcc)
+        # fourcc numérico (se inicializa al primer intento)
+        self._fourcc: Optional[int] = None
         self._frame_count = 0
+
+        # Para estimar FPS real
+        self._buffer_frames: List[np.ndarray] = []
+        self._buffer_timestamps: List[float] = []
+        self._t_start: Optional[float] = None
+        self._fps_estimated: Optional[float] = None
 
     @property
     def frame_count(self) -> int:
         return self._frame_count
+
+    def _create_writer(self, fps: float) -> None:
+        """
+        Intenta crear el VideoWriter probando varios códecs en orden:
+
+        1) El fourcc definido en StreamInfo (por ejemplo "mp4v").
+        2) "avc1" (H.264 en contenedor MP4 en muchos sistemas).
+        3) "H264"
+        4) "XVID"
+        5) "mp4v" (fallback final).
+
+        Esto ayuda a aprovechar mejor la calidad de codificación manteniendo
+        la resolución de entrada (p.ej. 2560x1440 para 2QHD).
+        """
+        if self._frame_size is None:
+            return
+
+        candidates: List[str] = []
+        if self.info.fourcc:
+            candidates.append(self.info.fourcc)
+
+        # Códecs alternativos, evitando duplicados
+        for cc in ("avc1", "H264", "XVID", "mp4v"):
+            if cc not in candidates:
+                candidates.append(cc)
+
+        writer: Optional[cv2.VideoWriter] = None
+        for cc in candidates:
+            fourcc = cv2.VideoWriter_fourcc(*cc)
+            w = cv2.VideoWriter(
+                self.path,
+                fourcc,
+                float(fps),
+                self._frame_size,
+                True,
+            )
+            if w.isOpened():
+                writer = w
+                self._fourcc = fourcc
+                break
+
+        self._writer = writer  # puede quedar None si todo falla
+
+    def _init_writer_if_needed(self) -> None:
+        """
+        Crea el VideoWriter usando el FPS estimado a partir del reloj.
+        Si aún no se puede estimar bien (grabación muy corta), usa info.fps.
+        """
+        if self._writer is not None or self._frame_size is None:
+            return
+
+        fps = float(self.info.fps)
+
+        # Intentar estimar FPS real si hay suficientes muestras
+        if self._buffer_timestamps:
+            dt = self._buffer_timestamps[-1] - self._buffer_timestamps[0]
+            n = len(self._buffer_timestamps)
+            # al menos 5 frames y >200ms para que la estimación tenga algo de sentido
+            if dt > 0.2 and n >= 5:
+                # ⚠️ CORREGIDO: usamos (n - 1) / dt porque hay n-1 intervalos entre n timestamps
+                fps_est = (n - 1) / max(dt, 1e-3)
+                # Para cámaras rápidas permitimos hasta 120fps,
+                # pero seguimos acotando a un rango razonable.
+                fps_est = float(max(10.0, min(120.0, fps_est)))
+                self._fps_estimated = fps_est
+                fps = fps_est
+
+        if fps <= 0:
+            fps = 30.0  # fallback defensivo
+
+        self.info.fps = int(round(fps))
+
+        # Crear writer con códecs candidatos
+        self._create_writer(fps)
+
+        # Volcar lo que haya en el búfer
+        if self._writer is not None and self._writer.isOpened() and self._buffer_frames:
+            for f in self._buffer_frames:
+                self._writer.write(f)
+            self._buffer_frames.clear()
+            self._buffer_timestamps.clear()
 
     def write(self, frame_bgr: np.ndarray) -> None:
         if frame_bgr is None:
             return
 
         h, w = frame_bgr.shape[:2]
-        if self._writer is None:
+        if self._frame_size is None:
+            # Se mantiene la resolución nativa del frame (ej. 2560x1440 para 2QHD)
             self._frame_size = (w, h)
-            self._writer = cv2.VideoWriter(
-                self.path,
-                self._fourcc,
-                self.info.fps,
-                self._frame_size,
-                True,
-            )
 
-        if not self._writer.isOpened():
+        now = time.time()
+        if self._t_start is None:
+            self._t_start = now
+
+        # Si todavía no hay writer, acumulamos frames para estimar FPS
+        if self._writer is None:
+            self._buffer_frames.append(frame_bgr.copy())
+            self._buffer_timestamps.append(now)
+            self._frame_count += 1
+
+            # Cuando tengamos suficientes datos, inicializamos el writer
+            # (15 frames o ~1 segundo como máximo para no usar mucha memoria)
+            if len(self._buffer_frames) >= 15 or (now - self._t_start) >= 1.0:
+                self._init_writer_if_needed()
             return
 
-        self._writer.write(frame_bgr)
-        self._frame_count += 1
+        # Si ya hay writer, escribimos normalmente
+        if self._writer.isOpened():
+            self._writer.write(frame_bgr)
+            self._frame_count += 1
 
     def close(self) -> None:
+        # Si nunca se creó el writer pero hay frames en búfer,
+        # creamos uno usando FPS aproximado / de fallback.
+        if self._writer is None and self._buffer_frames and self._frame_size is not None:
+            self._init_writer_if_needed()
+
         if self._writer is not None:
             self._writer.release()
             self._writer = None
@@ -130,7 +242,11 @@ class RecordingSession:
     - Varios StreamRecorder (webcams externas, Kinect color, etc.)
     - Un Kinect3DRecorder opcional para 3D.
     """
-    def __init__(self, output_dir: str, fps: int = 30, save_kinect_3d: bool = True):
+    def __init__(self, output_dir: str, fps: int = 60, save_kinect_3d: bool = True):
+        """
+        fps: FPS objetivo para los streams de vídeo.
+             Para tus cámaras 2QHD, se recomienda 60.
+        """
         self.output_dir = output_dir
         self.fps = fps
         self.streams: Dict[str, StreamRecorder] = {}

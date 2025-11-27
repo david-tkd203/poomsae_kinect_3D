@@ -6,21 +6,12 @@ import scipy.signal as signal
 
 
 class EnhancedSegmenter:
-    """
-    Segmentador mejorado para Taekwondo Poomsae que combina:
-    - Energía de efectores (manos/pies)
-    - Movimiento de tronco y caderas
-    - Cambios angulares (giros)
-    - Detección de posturas específicas
+    """Segmentador mejorado orientado a Po omsae (comentarios humanos).
 
-    Se diseña para trabajar con:
-    - angles_dict: dict[str, np.ndarray] con series de ángulos (en grados)
-    - landmarks_dict: dict[str, np.ndarray] con series (T x 2) o (T x 3) de cada landmark:
-        Ejemplo de claves esperadas:
-        - 'L_WRIST', 'R_WRIST'
-        - 'L_ANKLE', 'R_ANKLE'
-        - 'L_SHOULDER', 'R_SHOULDER'
-        - 'L_HIP', 'R_HIP'
+    Está pensado para ser fácil de entender por un lector humano. Los
+    comentarios y nombres de métodos explican la intención: combinar
+    diferentes fuentes de 'energía' (velocidad/ángulos/orientación)
+    para detectar ventanas temporales que correspondan a movimientos.
     """
 
     def __init__(

@@ -1,557 +1,416 @@
 # src/dataio/report_generator.py
+"""Generador de informes PDF a partir de resultados de scoring.
+
+Contiene utilidades para leer los Excel de scoring y componer un
+PDF amigable para informes de práctica. Se han añadido pequeñas
+mejoras de estilo y corrección de textos para que el informe sea
+más legible.
+"""
 from __future__ import annotations
-"""
-Generador de reportes de exactitud de calidad de movimiento.
 
-Compara etiquetas GT (CSV) vs predicciones en JSON y exporta un XLSX
-con:
-- Resumen global
-- Métricas por movimiento
-- Métricas por video
-- Matriz de confusión ponderada por tiempo
-- Detalle segmento a segmento
-"""
-
-import argparse, json, sys
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from datetime import datetime
+from typing import Optional, Tuple, Dict, Any
+import json
 
 import pandas as pd
-import numpy as np
 
-GT_LABELS = ["correcto", "error_leve", "error_grave"]
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import cm
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Paragraph,
+    Spacer,
+    Table,
+    TableStyle,
+    PageBreak,
+)
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
 
-# ------------------------- util -------------------------
 
-def _video_id_from_path(p: str) -> str:
+# ------------------------------------------------------------
+# Helpers de carga de datos
+# ------------------------------------------------------------
+
+def load_scoring_from_xlsx(score_xlsx: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Carga las hojas 'detalle' y 'resumen' producidas por score_pal_yang.py.
+    Si alguna falta, devuelve DataFrames vacíos con columnas mínimas.
+    """
+    score_xlsx = Path(score_xlsx)
+    if not score_xlsx.exists():
+        raise FileNotFoundError(f"No se encontró el archivo de scoring: {score_xlsx}")
+
+    xls = pd.ExcelFile(score_xlsx)
+
+    if "detalle" in xls.sheet_names:
+        df_det = pd.read_excel(xls, "detalle")
+    else:
+        df_det = pd.DataFrame(columns=[
+            "video_id", "M", "tech_kor", "tech_es",
+            "comp_arms", "comp_legs", "comp_kick",
+            "ded_total_move", "exactitud_acum", "move_acc",
+            "fail_parts",
+        ])
+
+    if "resumen" in xls.sheet_names:
+        df_sum = pd.read_excel(xls, "resumen")
+    else:
+        df_sum = pd.DataFrame(columns=[
+            "video_id", "moves_expected", "moves_detected",
+            "moves_scored", "moves_correct_90p",
+            "ded_total", "exactitud_final",
+            "pct_arms_ok", "pct_legs_ok", "pct_kick_ok",
+            "restart_penalty",
+        ])
+
+    return df_det, df_sum
+
+
+def load_session_metadata(capture_dir: Path) -> Dict[str, Any]:
+    """
+    Intenta leer algún JSON de metadatos en la carpeta de captura.
+    Nombres posibles: session_meta.json, metadata.json, meta.json
+    (opcional; si no hay nada, devuelve {}).
+    """
+    capture_dir = Path(capture_dir)
+    for name in ("session_meta.json", "metadata.json", "meta.json"):
+        p = capture_dir / name
+        if p.exists():
+            try:
+                return json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+    return {}
+
+
+# ------------------------------------------------------------
+# Lógica de interpretación de resultados
+# ------------------------------------------------------------
+
+def describe_score(exactitud_final: float) -> str:
+    """
+    Traduce la nota (1.5–4.0) a una etiqueta cualitativa.
+    Ajusta los cortes según lo que tú quieras en tu tesis.
+    """
+    if exactitud_final >= 3.8:
+        return "Desempeño sobresaliente. La ejecución global del poomsae es altamente consistente."
+    if exactitud_final >= 3.5:
+        return "Muy buen desempeño. Se observan detalles menores, pero la técnica general es sólida."
+    if exactitud_final >= 3.0:
+        return "Desempeño adecuado. Existen aspectos técnicos mejorables, aunque la base está bien lograda."
+    return "Área de mejora. Se identifican varias desviaciones técnicas que requieren trabajo específico."
+
+
+def _fmt_pct(v: Any) -> str:
     try:
-        return Path(p).stem
+        if pd.isna(v):
+            return "—"
+        return f"{float(v):.1f} %"
     except Exception:
-        return str(p)
+        return "—"
 
-def _read_json(path: Path) -> Optional[dict]:
+
+def _fmt_num(v: Any, ndigits: int = 2) -> str:
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        if pd.isna(v):
+            return "—"
+        return f"{float(v):.{ndigits}f}"
     except Exception:
-        return None
+        return "—"
 
-def _extract_segments_from_json(obj: dict) -> Tuple[str, List[dict]]:
-    """
-    Devuelve (video_id, segmentos) donde segmentos = [{start_s, end_s, label}]
 
-    Soporta esquemas comunes:
-      - "segments", "pred_segments", "events", "preds", "windows", "timeline"
-      - y ahora también "moves" (como los JSON derivados de CaptureResult)
+# ------------------------------------------------------------
+# Generación de PDF
+# ------------------------------------------------------------
 
-    También acepta campos:
-      - start_s / end_s, t0/t1, start/end, t_start/t_end...
-      - label, pred, pred_label, class, prediction, y_hat, quality_label, gt_label...
-    """
-    # video_id
-    vid = None
-    for k in ("video_id", "video", "file", "source", "path"):
-        if k in obj and isinstance(obj[k], str) and obj[k].strip():
-            vid = _video_id_from_path(obj[k])
-            break
-
-    # claves aceptadas
-    start_keys = ("start_s", "t0", "start", "start_sec", "begin", "s", "t_start")
-    end_keys   = ("end_s", "t1", "end", "end_sec", "finish", "e", "t_end")
-    label_keys = (
-        "label",
-        "pred",
-        "pred_label",
-        "class",
-        "prediction",
-        "y_hat",
-        "quality_label",
-        "gt_label",
-    )
-
-    def grab(d: dict) -> Optional[dict]:
-        if not isinstance(d, dict):
-            return None
-        start = None
-        end = None
-        lab = None
-
-        for k in start_keys:
-            if k in d:
-                try:
-                    start = float(d[k])
-                except Exception:
-                    pass
-                if start is not None:
-                    break
-
-        for k in end_keys:
-            if k in d:
-                try:
-                    end = float(d[k])
-                except Exception:
-                    pass
-                if end is not None:
-                    break
-
-        for k in label_keys:
-            if k in d:
-                lab = str(d[k]).strip().lower()
-                break
-
-        if start is not None and end is not None and end > start and lab:
-            return {"start_s": float(start), "end_s": float(end), "label": lab}
-        return None
-
-    def walk(x) -> List[dict]:
-        out: List[dict] = []
-        if isinstance(x, dict):
-            # intento directo por claves típicas
-            for k in (
-                "segments",
-                "pred_segments",
-                "events",
-                "preds",
-                "windows",
-                "timeline",
-                "moves",  # soportar JSON de CaptureResult + etiquetas
-            ):
-                if k in x and isinstance(x[k], list):
-                    for it in x[k]:
-                        g = grab(it)
-                        if g:
-                            out.append(g)
-            # revisar hijas
-            for v in x.values():
-                out.extend(walk(v))
-        elif isinstance(x, list):
-            for it in x:
-                if isinstance(it, dict):
-                    g = grab(it)
-                    if g:
-                        out.append(g)
-        return out
-
-    segs = walk(obj)
-
-    # normalizar labels a conjunto conocido
-    for s in segs:
-        if s["label"] not in GT_LABELS:
-            if s["label"] in ("leve", "minor", "slight"):
-                s["label"] = "error_leve"
-            elif s["label"] in ("grave", "major", "severe"):
-                s["label"] = "error_grave"
-            elif s["label"] in ("ok", "correct", "correcta"):
-                s["label"] = "correcto"
-
-    return (vid or "", segs)
-
-def _find_jsons(preds_dir: Path) -> List[Path]:
-    return sorted([p for p in preds_dir.rglob("*.json") if p.is_file()])
-
-def _overlap(a0, a1, b0, b1) -> float:
-    x0 = max(a0, b0)
-    x1 = min(a1, b1)
-    return max(0.0, x1 - x0)
-
-# ------------------- carga de datos -------------------
-
-def load_labels(labels_csv: Path) -> pd.DataFrame:
-    df = pd.read_csv(labels_csv)
-    # columnas mínimas
-    req = {"video", "start_s", "end_s", "label"}
-    missing = req - set(df.columns)
-    if missing:
-        raise SystemExit(f"Faltan columnas en labels CSV: {missing}")
-    # normalización
-    df["video_id"] = df["video"].astype(str).apply(_video_id_from_path)
-    df["start_s"] = df["start_s"].astype(float)
-    df["end_s"] = df["end_s"].astype(float)
-    df["duration"] = df["end_s"] - df["start_s"]
-    df = df[df["duration"] > 0]
-    df["label"] = df["label"].astype(str).str.lower().str.strip()
-    if "move_id" not in df.columns:
-        df["move_id"] = ""
-    # mapear variantes a conjunto base
-    df.loc[df["label"].isin(["leve", "minor", "slight"]), "label"] = "error_leve"
-    df.loc[df["label"].isin(["grave", "major", "severe"]), "label"] = "error_grave"
-    df.loc[df["label"].isin(["ok", "correct", "correcta"]), "label"] = "correcto"
-    return df
-
-def load_predictions(preds_dir: Path) -> pd.DataFrame:
-    rows: List[dict] = []
-    for jp in _find_jsons(preds_dir):
-        obj = _read_json(jp)
-        if not obj:
-            continue
-        vid, segs = _extract_segments_from_json(obj)
-        if not segs:
-            # fallback: intenta inferir video_id del nombre del json
-            if not vid:
-                vid = jp.stem
-        for s in segs:
-            rows.append(
-                {
-                    "json": str(jp),
-                    "video_id": vid or jp.stem,
-                    "start_s": float(s["start_s"]),
-                    "end_s": float(s["end_s"]),
-                    "label": str(s["label"]).lower().strip(),
-                }
-            )
-    if not rows:
-        return pd.DataFrame(columns=["json", "video_id", "start_s", "end_s", "label"])
-    df = pd.DataFrame(rows)
-    df["duration"] = df["end_s"] - df["start_s"]
-    df = df[df["duration"] > 0]
-    return df
-
-# --------------- emparejamiento y métricas ---------------
-
-def match_and_score(gt_df: pd.DataFrame, pr_df: pd.DataFrame) -> Tuple[pd.DataFrame, dict]:
-    """
-    Regresa:
-      details_df: una fila por segmento GT con predicción mayoritaria y métricas de solape
-      metrics: dict con resúmenes (global, por video, por move_id, confusion)
-
-    Reglas:
-      - Para cada segmento GT, la etiqueta predicha es la de mayor tiempo de solape con PR.
-      - Exactitud por-segmento = 1 si etiqueta mayoritaria coincide con GT.
-      - Exactitud tiempo-ponderada = sum tiempo solape con etiqueta correcta / duración total GT.
-    """
-    if gt_df.empty:
-        raise SystemExit("Labels vacíos.")
-
-    vids = sorted(set(gt_df["video_id"]))
-    details: List[dict] = []
-
-    # matriz de confusión tiempo-ponderada
-    lab_to_idx = {l: i for i, l in enumerate(GT_LABELS)}
-    conf = np.zeros((len(GT_LABELS), len(GT_LABELS)), dtype=float)  # rows = GT, cols = Pred (por tiempo)
-
-    for vid in vids:
-        gtv = gt_df[gt_df["video_id"] == vid].copy()
-        prv = pr_df[pr_df["video_id"] == vid].copy()
-
-        # si no hay predicciones para este video, todas fallan
-        for _, r in gtv.iterrows():
-            gt0, gt1, gt_lab, mv = float(r.start_s), float(r.end_s), r.label, r.move_id
-            dur = gt1 - gt0
-            if prv.empty:
-                details.append(
-                    {
-                        "video_id": vid,
-                        "move_id": mv,
-                        "gt_start": gt0,
-                        "gt_end": gt1,
-                        "gt_label": gt_lab,
-                        "pred_label": "(sin_pred)",
-                        "overlap_total": 0.0,
-                        "overlap_correct": 0.0,
-                        "overlap_ratio": 0.0,
-                        "segment_hit": 0,
-                    }
-                )
-                continue
-
-            # buscar solapes
-            prc = prv[(prv["start_s"] < gt1) & (prv["end_s"] > gt0)].copy()
-            if prc.empty:
-                details.append(
-                    {
-                        "video_id": vid,
-                        "move_id": mv,
-                        "gt_start": gt0,
-                        "gt_end": gt1,
-                        "gt_label": gt_lab,
-                        "pred_label": "(sin_pred)",
-                        "overlap_total": 0.0,
-                        "overlap_correct": 0.0,
-                        "overlap_ratio": 0.0,
-                        "segment_hit": 0,
-                    }
-                )
-                continue
-
-            # acumular solape por etiqueta
-            solape_por_label: Dict[str, float] = {}
-            total_ov = 0.0
-            correct_ov = 0.0
-            for _, p in prc.iterrows():
-                ov = _overlap(gt0, gt1, float(p.start_s), float(p.end_s))
-                if ov <= 0:
-                    continue
-                total_ov += ov
-                lab = str(p.label)
-                solape_por_label[lab] = solape_por_label.get(lab, 0.0) + ov
-                if lab == gt_lab:
-                    correct_ov += ov
-
-            # pred mayoritario por tiempo
-            if solape_por_label:
-                pred_lab = max(solape_por_label.items(), key=lambda kv: kv[1])[0]
-            else:
-                pred_lab = "(sin_pred)"
-
-            # actualizar matriz de confusión por tiempo
-            if pred_lab in lab_to_idx and gt_lab in lab_to_idx:
-                conf[lab_to_idx[gt_lab], lab_to_idx[pred_lab]] += solape_por_label.get(
-                    pred_lab, 0.0
-                )
-
-            hit = int(pred_lab == gt_lab and total_ov > 0)
-            details.append(
-                {
-                    "video_id": vid,
-                    "move_id": mv,
-                    "gt_start": gt0,
-                    "gt_end": gt1,
-                    "gt_label": gt_lab,
-                    "pred_label": pred_lab,
-                    "overlap_total": total_ov,
-                    "overlap_correct": correct_ov,
-                    "overlap_ratio": (correct_ov / dur) if dur > 0 else 0.0,
-                    "segment_hit": hit,
-                }
-            )
-
-    det = pd.DataFrame(details)
-    if det.empty:
-        raise SystemExit("Sin detalles: revise que existan predicciones JSON compatibles.")
-
-    # métricas globales
-    total_seg = len(det)
-    seg_acc = float(det["segment_hit"].mean()) if total_seg > 0 else 0.0
-
-    # tiempo-ponderado sobre GT total
-    gt_total_time = (gt_df["duration"].sum()) if len(gt_df) else 0.0
-    correct_time = float(det["overlap_correct"].sum())
-    time_acc = (correct_time / gt_total_time) if gt_total_time > 0 else 0.0
-
-    # por video
-    by_video = []
-    for vid, g in det.groupby("video_id"):
-        idx = gt_df["video_id"] == vid
-        gt_time = gt_df.loc[idx, "duration"].sum()
-        bt = {
-            "video_id": vid,
-            "segments": int(len(g)),
-            "segment_acc": float(g["segment_hit"].mean()) if len(g) else 0.0,
-            "gt_time_s": float(gt_time),
-            "correct_time_s": float(g["overlap_correct"].sum()),
-            "time_acc": float(g["overlap_correct"].sum() / gt_time) if gt_time > 0 else 0.0,
-        }
-        by_video.append(bt)
-    df_video = pd.DataFrame(by_video).sort_values(
-        ["time_acc", "segment_acc"], ascending=[True, True]
-    )
-
-    # por move_id
-    df_mv = []
-    gt_mv = gt_df.copy()
-    gt_mv["move_id"] = gt_mv["move_id"].fillna("").replace("", "(sin_move)")
-    det_mv = det.copy()
-    det_mv["move_id"] = det_mv["move_id"].fillna("").replace("", "(sin_move)")
-
-    for mv, g in det_mv.groupby("move_id"):
-        idxm = gt_mv["move_id"] == mv
-        gt_time = gt_mv.loc[idxm, "duration"].sum()
-        row = {
-            "move_id": mv,
-            "segments": int(len(g)),
-            "segment_acc": float(g["segment_hit"].mean()) if len(g) else 0.0,
-            "gt_time_s": float(gt_time),
-            "correct_time_s": float(g["overlap_correct"].sum()),
-            "time_acc": float(g["overlap_correct"].sum() / gt_time) if gt_time > 0 else 0.0,
-        }
-        df_mv.append(row)
-    df_move = pd.DataFrame(df_mv).sort_values(
-        ["time_acc", "segment_acc"], ascending=[True, True]
-    )
-
-    # matriz de confusión normalizada por fila (tiempo)
-    conf_df = pd.DataFrame(conf, index=GT_LABELS, columns=GT_LABELS)
-    conf_df_pct = conf_df.div(conf_df.sum(axis=1).replace(0, np.nan), axis=0)
-
-    metrics = {
-        "global": {
-            "segments": int(total_seg),
-            "segment_acc": float(seg_acc),
-            "gt_time_s": float(gt_total_time),
-            "correct_time_s": float(correct_time),
-            "time_acc": float(time_acc),
-        },
-        "by_video": df_video,
-        "by_move": df_move,
-        "confusion_time": conf_df,
-        "confusion_time_pct": conf_df_pct,
-    }
-    return det, metrics
-
-# ------------------- export a Excel -------------------
-
-def export_excel(
-    out_xlsx: Path,
-    metrics: dict,
-    details: pd.DataFrame,
-    alias: Optional[str] = None,
+def generate_pal_yang_report(
+    capture_dir: Path,
+    score_xlsx: Path,
+    out_pdf: Optional[Path] = None,
 ) -> Path:
-    out_xlsx.parent.mkdir(parents=True, exist_ok=True)
-    with pd.ExcelWriter(out_xlsx, engine="openpyxl") as xw:
-        # Resumen
-        g = metrics["global"]
-        df_summary = pd.DataFrame(
-            [
-                {
-                    "alias": alias or "",
-                    "segmentos_gt": g["segments"],
-                    "acierto_segmento_%": round(100.0 * g["segment_acc"], 2),
-                    "tiempo_gt_s": round(g["gt_time_s"], 3),
-                    "tiempo_correcto_s": round(g["correct_time_s"], 3),
-                    "acierto_tiempo_%": round(100.0 * g["time_acc"], 2),
-                }
-            ]
-        )
-        df_summary.to_excel(xw, sheet_name="Resumen", index=False)
+    """
+    Genera un informe en PDF a partir del Excel generado por score_pal_yang.py.
 
-        # Por movimiento
-        df_move = metrics["by_move"].copy()
-        if not df_move.empty:
-            df_move["acierto_segmento_%"] = (df_move["segment_acc"] * 100).round(2)
-            df_move["acierto_tiempo_%"] = (df_move["time_acc"] * 100).round(2)
-            cols = [
-                "move_id",
-                "segments",
-                "gt_time_s",
-                "correct_time_s",
-                "acierto_segmento_%",
-                "acierto_tiempo_%",
-            ]
-            df_move[cols].to_excel(xw, sheet_name="PorMovimiento", index=False)
+    Parámetros
+    ----------
+    capture_dir : Path
+        Carpeta raíz de la sesión (captures/session_YYYYMMDD_HHMMSS).
+    score_xlsx : Path
+        Ruta al Excel de scoring (con hojas 'detalle' y 'resumen').
+    out_pdf : Path, opcional
+        Ruta de salida del PDF. Si no se indica, se usa
+        <capture_dir>/pal_yang_report.pdf
 
-        # Por video
-        df_video = metrics["by_video"].copy()
-        if not df_video.empty:
-            df_video["acierto_segmento_%"] = (df_video["segment_acc"] * 100).round(2)
-            df_video["acierto_tiempo_%"] = (df_video["time_acc"] * 100).round(2)
-            cols = [
-                "video_id",
-                "segments",
-                "gt_time_s",
-                "correct_time_s",
-                "acierto_segmento_%",
-                "acierto_tiempo_%",
-            ]
-            df_video[cols].to_excel(xw, sheet_name="PorVideo", index=False)
+    Retorna
+    -------
+    Path
+        Ruta final del PDF generado.
+    """
+    capture_dir = Path(capture_dir)
+    score_xlsx = Path(score_xlsx)
 
-        # Confusión por tiempo (valores y %)
-        metrics["confusion_time"].to_excel(
-            xw, sheet_name="Confusion_tiempo", index=True
-        )
-        (metrics["confusion_time_pct"] * 100.0).round(2).to_excel(
-            xw, sheet_name="Confusion_tiempo_%", index=True
-        )
+    if out_pdf is None:
+        out_pdf = capture_dir / "pal_yang_report.pdf"
+    out_pdf = Path(out_pdf)
+    out_pdf.parent.mkdir(parents=True, exist_ok=True)
 
-        # Detalles
-        det = details.copy()
-        det["overlap_ratio_%"] = (det["overlap_ratio"] * 100).round(2)
-        det["segment_hit"] = det["segment_hit"].astype(int)
-        cols = [
-            "video_id",
-            "move_id",
-            "gt_start",
-            "gt_end",
-            "gt_label",
-            "pred_label",
-            "overlap_total",
-            "overlap_correct",
-            "overlap_ratio_%",
-            "segment_hit",
+    df_det, df_sum = load_scoring_from_xlsx(score_xlsx)
+    meta = load_session_metadata(capture_dir)
+
+    #los DataFrames `df_det` y `df_sum` provienen del
+    # script de scoring y pueden no contener todas las columnas. Las
+    # funciones helper `_fmt_pct` y `_fmt_num` se encargan de formatear
+    # valores faltantes de forma elegante.
+
+    # ---------- Estilos ----------
+    styles = getSampleStyleSheet()
+
+    styles.add(ParagraphStyle(
+        name="Small",
+        parent=styles["BodyText"],
+        fontSize=9,
+        leading=11,
+    ))
+    styles.add(ParagraphStyle(
+        name="BodyJustify",
+        parent=styles["BodyText"],
+        alignment=4,  # TA_JUSTIFY
+        leading=14,
+    ))
+
+    title_style = styles["Title"]
+    h2 = styles["Heading2"]
+    h3 = styles["Heading3"]
+    body = styles["BodyText"]
+    body_small = styles["Small"]
+    body_just = styles["BodyJustify"]
+
+    # ---------- Story ----------
+    story = []
+
+    # 1) Carátula
+    story.append(Paragraph("Informe de evaluación técnica Pal Jang", title_style))
+    story.append(Spacer(1, 0.5 * cm))
+
+    today = datetime.now().strftime("%d-%m-%Y %H:%M")
+    story.append(Paragraph(f"Fecha de generación: {today}", body))
+    story.append(Spacer(1, 0.3 * cm))
+
+    # Metadata básica, si existe
+    atleta = meta.get("athlete_name") or meta.get("nombre_atleta") or "No especificado"
+    categoria = meta.get("category") or meta.get("categoria") or "No especificada"
+    cinturon = meta.get("belt") or meta.get("cinturon") or "No especificado"
+    video_id = None
+
+    if not df_sum.empty and "video_id" in df_sum.columns:
+        try:
+            video_id = str(df_sum["video_id"].iloc[0])
+        except Exception:
+            pass
+    if not video_id and not df_det.empty and "video_id" in df_det.columns:
+        try:
+            video_id = str(df_det["video_id"].iloc[0])
+        except Exception:
+            pass
+
+    story.append(Paragraph(f"Atleta: <b>{atleta}</b>", body))
+    story.append(Paragraph(f"Categoría: <b>{categoria}</b>", body))
+    # Corregimos un typo presente en la versión anterior: 'Citinturón' -> 'Cinturón'
+    story.append(Paragraph(f"Cinturón: <b>{cinturon}</b>", body))
+    if video_id:
+        story.append(Paragraph(f"Video / ID evaluación: <b>{video_id}</b>", body))
+    story.append(Spacer(1, 0.6 * cm))
+
+    story.append(Paragraph(
+        "Este informe resume los resultados de la evaluación automática del poomsae Pal Jang, "
+        "utilizando un modelo de análisis de pose y reglas técnicas derivadas del reglamento "
+        "World Taekwondo para Poomsae. La nota se construye a partir de penalizaciones leves "
+        "y graves por desviaciones técnicas en brazos, piernas y patadas.",
+        body_just,
+    ))
+    story.append(Spacer(1, 0.6 * cm))
+
+    # 2) Resumen numérico global
+    story.append(Paragraph("1. Resumen global de la evaluación", h2))
+    story.append(Spacer(1, 0.3 * cm))
+
+    if df_sum.empty:
+        story.append(Paragraph(
+            "No se encontraron datos de resumen en el archivo de scoring. "
+            "Verifique que score_pal_yang.py se haya ejecutado correctamente.",
+            body,
+        ))
+    else:
+        s = df_sum.iloc[0]
+
+        exactitud_final = float(s.get("exactitud_final", 0.0) or 0.0)
+        ded_total = float(s.get("ded_total", 0.0) or 0.0)
+        moves_expected = int(s.get("moves_expected", 0) or 0)
+        moves_detected = int(s.get("moves_detected", 0) or 0)
+        moves_scored = int(s.get("moves_scored", 0) or 0)
+        moves_correct_90p = int(s.get("moves_correct_90p", 0) or 0)
+        pct_arms_ok = _fmt_pct(s.get("pct_arms_ok", None))
+        pct_legs_ok = _fmt_pct(s.get("pct_legs_ok", None))
+        pct_kick_ok = _fmt_pct(s.get("pct_kick_ok", None))
+        restart_penalty = float(s.get("restart_penalty", 0.0) or 0.0)
+
+        table_data = [
+            ["Indicador", "Valor"],
+            ["Nota final (exactitud)", f"{exactitud_final:.2f} / 4.00"],
+            ["Deducción total acumulada", _fmt_num(ded_total, 3)],
+            ["Penalización por reinicios", _fmt_num(restart_penalty, 2)],
+            ["Movimientos esperados", str(moves_expected)],
+            ["Movimientos detectados", str(moves_detected)],
+            ["Movimientos evaluados", str(moves_scored)],
+            ["Movimientos correctos (≥90 %)", str(moves_correct_90p)],
+            ["Técnicas de brazos OK", pct_arms_ok],
+            ["Posturas de piernas OK", pct_legs_ok],
+            ["Patadas OK", pct_kick_ok],
         ]
-        det[cols].to_excel(xw, sheet_name="Detalles", index=False)
-    return out_xlsx
 
-# ------------------- API de alto nivel -------------------
+        tbl = Table(table_data, colWidths=[7 * cm, 7 * cm])
+        tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#333333")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 10),
+            ("BACKGROUND", (0, 1), (-1, -1), colors.whitesmoke),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1),
+             [colors.whitesmoke, colors.HexColor("#f0f0f0")]),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.append(tbl)
+        story.append(Spacer(1, 0.4 * cm))
 
-def generate_report(
-    labels_csv: Path | str,
-    preds_dir: Path | str,
-    out_xlsx: Path | str,
-    alias: str = "",
-) -> Path:
-    """
-    Función de alto nivel para usar desde otros módulos del proyecto.
+        story.append(Paragraph(describe_score(exactitud_final), body_just))
+        story.append(Spacer(1, 0.6 * cm))
 
-    Args:
-        labels_csv: CSV con GT (video,start_s,end_s,label[,move_id])
-        preds_dir:  Carpeta con JSON de predicción
-        out_xlsx:   Ruta del XLSX de salida
-        alias:      Nombre del modelo/configuración (solo informativo)
+    # 3) Detalle por movimiento
+    story.append(Paragraph("2. Detalle por movimiento", h2))
+    story.append(Spacer(1, 0.3 * cm))
 
-    Return:
-        Ruta al XLSX generado.
-    """
-    labels_csv = Path(labels_csv)
-    preds_dir = Path(preds_dir)
-    out_xlsx = Path(out_xlsx)
+    if df_det.empty:
+        story.append(Paragraph(
+            "No se encontraron datos de detalle en la hoja 'detalle'.",
+            body,
+        ))
+    else:
+        story.append(Paragraph(
+            "La siguiente tabla resume, para cada movimiento del poomsae, "
+            "el estado de brazos, piernas y patada (cuando aplica), junto con "
+            "las partes donde se detectaron desviaciones técnicas.",
+            body_just,
+        ))
+        story.append(Spacer(1, 0.3 * cm))
 
-    gt = load_labels(labels_csv)
-    pr = load_predictions(preds_dir)
+        # Seleccionamos columnas “clave” para que la tabla no sea gigantesca
+        cols_existentes = df_det.columns.tolist()
+        cols_preferidas = [
+            "M",
+            "tech_es",
+            "comp_arms",
+            "comp_legs",
+            "comp_kick",
+            "fail_parts",
+            "exactitud_acum",
+        ]
+        cols_usar = [c for c in cols_preferidas if c in cols_existentes]
 
-    if pr.empty:
-        raise SystemExit(f"Sin JSON de predicción en: {preds_dir}")
+        # Si no está "tech_es", intentar usar "tech_kor"
+        if "tech_es" not in cols_usar and "tech_kor" in cols_existentes:
+            cols_usar.insert(1, "tech_kor")
 
-    # filtrar por intersección de videos
-    vids_gt = set(gt["video_id"])
-    vids_pr = set(pr["video_id"])
-    vids_common = vids_gt & vids_pr
-    if not vids_common:
-        raise SystemExit(
-            "No hay intersección de videos entre labels y predicciones. "
-            "Verifique video_id/nombres."
-        )
+        if not cols_usar:
+            story.append(Paragraph(
+                "No se encontraron columnas estándar para generar la tabla de detalle.",
+                body,
+            ))
+        else:
+            # Construimos la tabla en bloques para no reventar la página
+            header = [c.replace("_", " ").capitalize() for c in cols_usar]
 
-    gt = gt[gt["video_id"].isin(vids_common)].reset_index(drop=True)
-    pr = pr[pr["video_id"].isin(vids_common)].reset_index(drop=True)
+            # ordenamos por M si existe
+            df_det_sorted = df_det.copy()
+            if "M" in df_det_sorted.columns:
+                # M suele ser algo tipo '1', '2a', etc.
+                df_det_sorted["__order"] = df_det_sorted["M"].astype(str)
+                df_det_sorted = df_det_sorted.sort_values("__order")
+                df_det_sorted = df_det_sorted.drop(columns=["__order"])
 
-    details, metrics = match_and_score(gt, pr)
-    out = export_excel(out_xlsx, metrics, details, alias=alias or None)
-    return out
+            data_rows = []
+            for _, row in df_det_sorted.iterrows():
+                r = []
+                for col in cols_usar:
+                    val = row.get(col, "")
+                    if col == "exactitud_acum":
+                        r.append(_fmt_num(val, 3))
+                    else:
+                        r.append(str(val) if val == val else "—")
+                data_rows.append(r)
 
-# ------------------- CLI -------------------
+            # Particionamos en bloques de, por ejemplo, 25 movimientos
+            chunk_size = 25
+            for offset in range(0, len(data_rows), chunk_size):
+                chunk = data_rows[offset:offset + chunk_size]
+                table_data = [header] + chunk
 
-def main():
-    ap = argparse.ArgumentParser(
-        description=(
-            "Genera informe de % de acertividad comparando etiquetas GT "
-            "vs predicciones JSON."
-        )
+                tbl = Table(table_data, repeatRows=1)
+                tbl.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#333333")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                    ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, 0), 8),
+                    ("BACKGROUND", (0, 1), (-1, -1), colors.whitesmoke),
+                    ("ROWBACKGROUNDS", (0, 1), (-1, -1),
+                     [colors.whitesmoke, colors.HexColor("#f5f5f5")]),
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                    ("FONTSIZE", (0, 1), (-1, -1), 8),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ]))
+
+                story.append(tbl)
+                story.append(Spacer(1, 0.4 * cm))
+
+                # Si todavía quedan filas, meter salto de página
+                if offset + chunk_size < len(data_rows):
+                    story.append(PageBreak())
+
+    # 4) Notas finales / observaciones
+    story.append(PageBreak())
+    story.append(Paragraph("3. Observaciones generales", h2))
+    story.append(Spacer(1, 0.3 * cm))
+
+    story.append(Paragraph(
+        "Las métricas anteriores deben interpretarse siempre en conjunto con la evaluación "
+        "experta del entrenador o juez. El sistema de análisis de pose está sujeto a "
+        "limitaciones propias de la captura (posición de la cámara, oclusiones, ropa, "
+        "calidad de iluminación) y de la segmentación automática del poomsae.",
+        body_just,
+    ))
+    story.append(Spacer(1, 0.3 * cm))
+
+    story.append(Paragraph(
+        "El objetivo de este informe es proporcionar una referencia cuantitativa para apoyar "
+        "la práctica y el entrenamiento, destacando tendencias y patrones de error más que "
+        "reemplazar la evaluación humana.",
+        body_just,
+    ))
+
+    # ---------- Construcción del PDF ----------
+    doc = SimpleDocTemplate(
+        str(out_pdf),
+        pagesize=A4,
+        leftMargin=2 * cm,
+        rightMargin=2 * cm,
+        topMargin=2 * cm,
+        bottomMargin=2 * cm,
     )
-    ap.add_argument(
-        "--labels",
-        required=True,
-        help="CSV con columnas: video,start_s,end_s,label[,move_id]",
-    )
-    ap.add_argument(
-        "--preds-dir",
-        required=True,
-        help="Carpeta con JSON de predicción (recursivo)",
-    )
-    ap.add_argument(
-        "--alias",
-        type=str,
-        default="",
-        help="Solo informativo (se incluye en hoja Resumen)",
-    )
-    ap.add_argument("--out-xlsx", required=True, help="Ruta XLSX de salida")
-    args = ap.parse_args()
+    doc.build(story)
 
-    labels_csv = Path(args.labels)
-    preds_dir = Path(args.preds_dir)
-    out_xlsx = Path(args.out_xlsx)
-
-    out = generate_report(labels_csv, preds_dir, out_xlsx, alias=args.alias)
-    print(f"[OK] Reporte -> {out}")
-
-if __name__ == "__main__":
-    main()
+    return out_pdf

@@ -9,12 +9,13 @@ from pykinect2 import PyKinectRuntime
 
 
 class KinectCapture:
-    """
-    Wrapper simple para Kinect v2:
-    - Color + Body (y opcionalmente Depth/BodyIndex).
-    - get_color_bgr(): frame de color BGR para OpenCV / MediaPipe.
-    - get_joint_positions(): joints 3D del primer cuerpo.
-    - get_body_point_cloud(): nube de puntos 3D del cuerpo usando Depth+BodyIndex.
+    """Pequeño wrapper para Kinect v2 usado por la aplicación.
+
+    Provee métodos de conveniencia para obtener el frame de color en
+    formato BGR, las posiciones 3D de las articulaciones del primer
+    cuerpo rastreado y una nube de puntos 3D del cuerpo usando Depth +
+    BodyIndex. Las coordenadas devueltas están en metros y en el sistema
+    de cámara.
     """
 
     def __init__(self, use_body_index: bool = False):
@@ -87,9 +88,18 @@ class KinectCapture:
 
     # ------------------------------------------------------------------
     def get_joint_positions(self) -> Dict[int, np.ndarray]:
-        """
-        Devuelve un diccionario {joint_type: np.array([x, y, z])}
-        con las articulaciones del primer cuerpo en coords de cámara (metros).
+        """Obtiene las posiciones 3D de las articulaciones del primer cuerpo.
+
+        Retorna
+        -------
+        Dict[int, np.ndarray]
+            Mapeo `joint_type` -> `np.array([x, y, z])` en metros. Los
+            `joint_type` corresponden a las constantes de `PyKinectV2`,
+            por ejemplo `PyKinectV2.JointType_Head`.
+
+        Nota
+        ----
+        Si una articulación no está trackeada se omite del diccionario.
         """
         body = self.get_first_tracked_body()
         if body is None:
@@ -135,17 +145,20 @@ class KinectCapture:
     # ------------------------------------------------------------------
     def get_body_point_cloud(
         self,
-        max_points: int = 20000,
+        max_points: int = 25000,
         min_depth_m: float = 0.5,
-        max_depth_m: float = 4.0,
+        max_depth_m: float = 8.0,   # <- antes 5.0, ahora permite más distancia
     ) -> np.ndarray:
-        """
-        Devuelve una nube de puntos 3D (N, 3) en coords de cámara [m] del cuerpo,
-        usando BodyIndex + Depth.
+        """Construye una nube de puntos 3D del cuerpo usando Depth + BodyIndex.
 
-        - Solo toma píxeles donde BodyIndex != 255 (es decir, donde hay cuerpo).
-        - Filtra por rango de profundidad [min_depth_m, max_depth_m].
-        - Submuestrea a lo más max_points para no reventar la GPU/CPU.
+        Parámetros
+        ----------
+        max_points : int
+            Número máximo de puntos a devolver (submuestreo aleatorio si hay más).
+        min_depth_m, max_depth_m : float
+            Rango de profundidad en metros para filtrar la nube.
+
+        Devuelve un array `(N, 3)` con coordenadas `[x, y, z]` en metros.
         """
         if not self._use_body_index:
             return np.zeros((0, 3), dtype=np.float32)
@@ -174,8 +187,9 @@ class KinectCapture:
 
         d = depth[ys, xs]
 
-        # Intrínsecos aproximados de la cámara de profundidad Kinect v2 (512x424)
-        # Tomados de calibraciones publicadas (fx, fy ~ 365, cx ~ 257, cy ~ 205). :contentReference[oaicite:0]{index=0}
+        # Intrínsecos aproximados de la cámara de profundidad Kinect v2 (512x424).
+        # Estos valores son aproximados y se mantienen explícitos aquí para
+        # que sea fácil cambiarlos si se calibra la cámara.
         fx = 364.815
         fy = 364.815
         cx = 256.972

@@ -1,4 +1,14 @@
-# src/segmentation/move_capture.py
+"""Segmentación y clasificación de movimientos (Poomsae-aware).
+
+Este módulo implementa un pipeline de segmentación pensado para
+poomsae (ej. 8yang). Contiene:
+ - `PoomsaeConfig`: carga de especificaciones y parámetros.
+ - `SpecAwareSegmenter`: heurísticas y energía para detectar movimientos.
+ - `PoseClassifier`: heurístico (y opción ML) para clasificar posturas.
+
+Los cambios realizados son principalmente docstrings y comentarios
+para que el código resulte más claro y "hecho por una persona".
+"""
 from __future__ import annotations
 import math, json, yaml
 from dataclasses import dataclass, asdict
@@ -49,7 +59,12 @@ class PoomsaeConfig:
             with open(self.pose_spec_path, "r", encoding="utf-8") as f:
                 self.pose_spec = json.load(f)
 
-            print(f"[CONFIG] ✅ Cargadas especificaciones para {self.poomsae_spec.get('poomsae','?')}")
+            # Mensaje informativo claro y útil para quien ejecute el script
+            print(
+                f"[CONFIG] ✅ Cargadas especificaciones: "
+                f"poomsae={self.poomsae_spec.get('poomsae','?')}, "
+                f"pose_spec_path={self.pose_spec_path.name}, config={self.config_path.name}"
+            )
         except Exception as e:
             print(f"[CONFIG] ❌ Error cargando configuraciones: {e}")
             raise
@@ -357,7 +372,11 @@ class SpecAwareSegmenter:
                 segments.append((a, b))
 
         merged = self._merge_segments(segments)
-        print(f"[SEGMENTER] Detectados {len(merged)} segmentos (esperados ≈ {self.expected_segments})")
+        # Mensaje para registro: número de segmentos detectados y sugerencia
+        print(
+            f"[SEGMENTER] Detectados {len(merged)} segmentos "
+            f"(esperados ≈ {self.expected_segments}). Revise visualmente si es necesario."
+        )
         return merged
 
 

@@ -1,4 +1,14 @@
 # src/offline/offline_pipeline.py
+"""Herramientas de procesamiento offline para una sesión "capture".
+
+Este módulo realiza un pipeline ligero que, dado un directorio de
+captura con videos (.mp4), extrae landmarks con MediaPipe, calcula un
+score (placeholder) y genera un reporte XLSX.
+
+Los cambios que hagamos aquí son deliberadamente mínimos: mejorar
+mensajes, añadir docstrings y comentarios para que sea más legible
+para un desarrollador que revisa el código.
+"""
 from __future__ import annotations
 
 from typing import Callable, Optional, Dict, List
@@ -130,7 +140,11 @@ def run_offline_pipeline(
     """
     video_files = sorted(glob.glob(os.path.join(capture_dir, "*.mp4")))
     if not video_files:
-        raise RuntimeError(f"No se encontraron videos .mp4 en {capture_dir}")
+        # Mensaje más amigable y orientador para usuarios no técnicos
+        raise RuntimeError(
+            f"No se encontraron archivos .mp4 en '{capture_dir}'. "
+            "Verifique que la grabación se haya completado y que la ruta sea correcta."
+        )
 
     if progress_cb is not None:
         progress_cb("Inicializando MediaPipe Pose...", 0.0)
@@ -152,7 +166,8 @@ def run_offline_pipeline(
         lm_data = _extract_landmarks_from_video(vf, mp_pose)
         step += 1
 
-        # Guardar landmarks en .npz por si quieres reprocesar
+        # Guardar landmarks en .npz por si quieres reprocesar o depurar
+        # (esto facilita reproducibilidad sin volver a ejecutar MediaPipe).
         npz_path = os.path.join(capture_dir, f"{name}_landmarks.npz")
         np.savez_compressed(
             npz_path,
