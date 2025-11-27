@@ -7,6 +7,12 @@ import json
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
+# --- Tuning de rendimiento (Qt/OpenGL + OpenCV + prioridad proceso) ---
+from .perf_tuning import prepare_qt_environment, bootstrap_performance
+
+# Importante: preparar entorno Qt/OpenGL ANTES de importar PyQt5
+prepare_qt_environment()
+
 from PyQt5 import QtWidgets
 
 from .viz import Kinect3DWindow
@@ -459,6 +465,9 @@ def build_argparser() -> argparse.ArgumentParser:
 def main(argv: Optional[list[str]] = None) -> None:
     if argv is None:
         argv = sys.argv[1:]
+
+    # Ajustes globales de rendimiento (OpenCV, prioridad, etc.)
+    bootstrap_performance()
 
     ap = build_argparser()
     args = ap.parse_args(argv)
