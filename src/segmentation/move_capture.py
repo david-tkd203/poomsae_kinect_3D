@@ -807,8 +807,22 @@ def _choose_active_limb(
         d = np.sqrt(np.sum(np.diff(xy, axis=0) ** 2, axis=1))
         return float(np.nansum(d))
 
-    cand = {k: eff_xy[k][a:b + 1] for k in END_EFFECTORS}
-    return max(cand.items(), key=lambda kv: _disp(kv[1]))[0]
+    # Construir candidato por efectores y elegir el que tenga mayor desplazamiento
+    best_limb = None
+    best_disp = -1.0
+    for k in END_EFFECTORS:
+        series = eff_xy.get(k)
+        if series is None:
+            disp = 0.0
+        else:
+            seg = series[a:b + 1]
+            disp = _disp(seg)
+
+        if disp > best_disp:
+            best_disp = disp
+            best_limb = k
+
+    return best_limb if best_limb is not None else END_EFFECTORS[0]
 
 
 def _choose_pose_frame(smax: np.ndarray, a: int, b: int) -> int:

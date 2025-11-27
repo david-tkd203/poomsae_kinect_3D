@@ -85,6 +85,61 @@ def load_session_metadata(capture_dir: Path) -> Dict[str, Any]:
     return {}
 
 
+def _get_video_id_from_dfs(df_sum: pd.DataFrame, df_det: pd.DataFrame) -> Optional[str]:
+    """Intentar extraer un `video_id` de las hojas de scoring.
+
+    Revisa primero `df_sum`, luego `df_det`. Devuelve `None` si no lo encuentra.
+    """
+    vid = None
+    try:
+        if not df_sum.empty and "video_id" in df_sum.columns:
+            vid = str(df_sum["video_id"].iloc[0])
+    except Exception:
+        vid = None
+
+    if not vid:
+        try:
+            if not df_det.empty and "video_id" in df_det.columns:
+                vid = str(df_det["video_id"].iloc[0])
+        except Exception:
+            vid = None
+
+    return vid
+
+
+def _make_summary_table_rows(s: pd.Series) -> Tuple[list[list[str]], float]:
+    """Construir `table_data` para el resumen global y devolver exactitud_final.
+
+    Retorna una tupla `(table_data, exactitud_final)`.
+    """
+    exactitud_final = float(s.get("exactitud_final", 0.0) or 0.0)
+    ded_total = float(s.get("ded_total", 0.0) or 0.0)
+    moves_expected = int(s.get("moves_expected", 0) or 0)
+    moves_detected = int(s.get("moves_detected", 0) or 0)
+    moves_scored = int(s.get("moves_scored", 0) or 0)
+    moves_correct_90p = int(s.get("moves_correct_90p", 0) or 0)
+    pct_arms_ok = _fmt_pct(s.get("pct_arms_ok", None))
+    pct_legs_ok = _fmt_pct(s.get("pct_legs_ok", None))
+    pct_kick_ok = _fmt_pct(s.get("pct_kick_ok", None))
+    restart_penalty = float(s.get("restart_penalty", 0.0) or 0.0)
+
+    table_rows = [
+        ["Indicador", "Valor"],
+        ["Nota final (exactitud)", f"{exactitud_final:.2f} / 4.00"],
+        ["Deducción total acumulada", _fmt_num(ded_total, 3)],
+        ["Penalización por reinicios", _fmt_num(restart_penalty, 2)],
+        ["Movimientos esperados", str(moves_expected)],
+        ["Movimientos detectados", str(moves_detected)],
+        ["Movimientos evaluados", str(moves_scored)],
+        ["Movimientos correctos (≥90 %)", str(moves_correct_90p)],
+        ["Técnicas de brazos OK", pct_arms_ok],
+        ["Posturas de piernas OK", pct_legs_ok],
+        ["Patadas OK", pct_kick_ok],
+    ]
+
+    return table_rows, exactitud_final
+
+
 # ------------------------------------------------------------
 # Lógica de interpretación de resultados
 # ------------------------------------------------------------
@@ -202,18 +257,7 @@ def generate_pal_yang_report(
     atleta = meta.get("athlete_name") or meta.get("nombre_atleta") or "No especificado"
     categoria = meta.get("category") or meta.get("categoria") or "No especificada"
     cinturon = meta.get("belt") or meta.get("cinturon") or "No especificado"
-    video_id = None
-
-    if not df_sum.empty and "video_id" in df_sum.columns:
-        try:
-            video_id = str(df_sum["video_id"].iloc[0])
-        except Exception:
-            pass
-    if not video_id and not df_det.empty and "video_id" in df_det.columns:
-        try:
-            video_id = str(df_det["video_id"].iloc[0])
-        except Exception:
-            pass
+    video_id = _get_video_id_from_dfs(df_sum, df_det)
 
     story.append(Paragraph(f"Atleta: <b>{atleta}</b>", body))
     story.append(Paragraph(f"Categoría: <b>{categoria}</b>", body))
@@ -245,30 +289,7 @@ def generate_pal_yang_report(
     else:
         s = df_sum.iloc[0]
 
-        exactitud_final = float(s.get("exactitud_final", 0.0) or 0.0)
-        ded_total = float(s.get("ded_total", 0.0) or 0.0)
-        moves_expected = int(s.get("moves_expected", 0) or 0)
-        moves_detected = int(s.get("moves_detected", 0) or 0)
-        moves_scored = int(s.get("moves_scored", 0) or 0)
-        moves_correct_90p = int(s.get("moves_correct_90p", 0) or 0)
-        pct_arms_ok = _fmt_pct(s.get("pct_arms_ok", None))
-        pct_legs_ok = _fmt_pct(s.get("pct_legs_ok", None))
-        pct_kick_ok = _fmt_pct(s.get("pct_kick_ok", None))
-        restart_penalty = float(s.get("restart_penalty", 0.0) or 0.0)
-
-        table_data = [
-            ["Indicador", "Valor"],
-            ["Nota final (exactitud)", f"{exactitud_final:.2f} / 4.00"],
-            ["Deducción total acumulada", _fmt_num(ded_total, 3)],
-            ["Penalización por reinicios", _fmt_num(restart_penalty, 2)],
-            ["Movimientos esperados", str(moves_expected)],
-            ["Movimientos detectados", str(moves_detected)],
-            ["Movimientos evaluados", str(moves_scored)],
-            ["Movimientos correctos (≥90 %)", str(moves_correct_90p)],
-            ["Técnicas de brazos OK", pct_arms_ok],
-            ["Posturas de piernas OK", pct_legs_ok],
-            ["Patadas OK", pct_kick_ok],
-        ]
+        table_data, exactitud_final = _make_summary_table_rows(s)
 
         tbl = Table(table_data, colWidths=[7 * cm, 7 * cm])
         tbl.setStyle(TableStyle([

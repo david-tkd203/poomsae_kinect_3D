@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import List, Dict, Any, Optional
 
 import cv2
 import numpy as np
@@ -36,7 +37,7 @@ VIDEO_EXTS = (".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".mpg", ".mpeg")
 N_LANDMARKS = 33
 
 
-def iter_videos(path: Path) -> list[Path]:
+def iter_videos(path: Path) -> List[Path]:
     """
     Devuelve una lista ordenada de videos a procesar.
 
@@ -46,11 +47,13 @@ def iter_videos(path: Path) -> list[Path]:
     if path.is_file() and path.suffix.lower() in VIDEO_EXTS:
         return [path]
 
-    out: list[Path] = []
+    found: List[Path] = []
     for ext in VIDEO_EXTS:
-        out.extend(path.rglob(f"*{ext}"))
+        pattern = f"*{ext}"
+        for p in path.rglob(pattern):
+            found.append(p)
 
-    return sorted(out)
+    return sorted(found)
 
 
 def extract_for_video(
@@ -94,7 +97,7 @@ def extract_for_video(
         return
 
     cap = cv2.VideoCapture(str(vpath))
-    if not cap.isOpened():
+    if not cap or not cap.isOpened():
         print(f"[WARN] No se pudo abrir: {vpath}")
         return
 
@@ -105,60 +108,86 @@ def extract_for_video(
         min_tracking_confidence=track_conf,
     )
 
-    rows: list[tuple[str, int, int, float, float, float, float]] = []
     vid = vpath.stem
-    idx = 0  # frame index
+    frame_idx = 0
+
+    # Usar lista de diccionarios para filas mejora legibilidad
+    rows: List[Dict[str, Any]] = []
 
     while True:
-        ok, img = cap.read()
-        if not ok:
+        ok, frame_bgr = cap.read()
+        if not ok or frame_bgr is None:
             break
 
         # Redimensionar manteniendo aspecto si corresponde
-        h, w = img.shape[:2]
+        h, w = frame_bgr.shape[:2]
         if resize_w and w != resize_w:
-            nh = int(round(h * (resize_w / float(w))))
-            img = cv2.resize(img, (resize_w, nh), interpolation=cv2.INTER_LINEAR)
+            new_h = int(round(h * (resize_w / float(w))))
+            frame_bgr = cv2.resize(frame_bgr, (resize_w, new_h), interpolation=cv2.INTER_LINEAR)
 
-        # Procesar con el wrapper (espera BGR). El wrapper devuelve
-        # normalmente (pose2d, world_landmarks), pero dejamos margen
-        # para wrappers alternativos que retornen solo pose2d.
-        pose2d, _world = pose_est.process(img)
+        # Procesar con el wrapper (espera BGR). Normalizar posible resultado
+        try:
+            proc_result = pose_est.process(frame_bgr)
+        except Exception as exc:
+            proc_result = (None, None)
 
-        # pose2d se espera shape (N_LANDMARKS, 4) = [x,y,z,visibility] normalizados
-        if pose2d is not None and pose2d.shape[0] == N_LANDMARKS:
+        if isinstance(proc_result, tuple) and len(proc_result) >= 1:
+            pose2d = proc_result[0]
+        else:
+            pose2d = proc_result
+
+        # pose2d esperado: (N_LANDMARKS, 4) -> x,y,z,visibility
+        if pose2d is not None and getattr(pose2d, "shape", (0,))[0] == N_LANDMARKS:
             for j in range(N_LANDMARKS):
                 x, y, z, v = pose2d[j]
 
-                # Normalizamos NaNs / infinities
-                if not np.isfinite(x) or not np.isfinite(y) or v < vis_min:
-                    x, y = np.nan, np.nan
-                elif clamp01:
-                    # MediaPipe a veces se sale levemente de [0,1]
-                    x = 0.0 if x < 0.0 else (1.0 if x > 1.0 else x)
-                    y = 0.0 if y < 0.0 else (1.0 if y > 1.0 else y)
+                # Normalizar valores y aplicar umbral de visibility
+                valid_xy = np.isfinite(x) and np.isfinite(y) and (v >= vis_min)
+                if not valid_xy:
+                    x_val, y_val = np.nan, np.nan
+                else:
+                    x_val, y_val = float(x), float(y)
+                    if clamp01:
+                        x_val = max(0.0, min(1.0, x_val))
+                        y_val = max(0.0, min(1.0, y_val))
 
-                rows.append((vid, idx, j, float(x), float(y), float(z), float(v)))
+                rows.append({
+                    "video_id": vid,
+                    "frame": int(frame_idx),
+                    "lmk_id": int(j),
+                    "x": x_val,
+                    "y": y_val,
+                    "z": float(z),
+                    "visibility": float(v),
+                })
         else:
-            # No hay landmarks confiables para este frame: rellenamos NaN/0
+            # Rellenar con NaN/0 si no hay landmarks
             for j in range(N_LANDMARKS):
-                rows.append((vid, idx, j, np.nan, np.nan, 0.0, 0.0))
+                rows.append({
+                    "video_id": vid,
+                    "frame": int(frame_idx),
+                    "lmk_id": int(j),
+                    "x": np.nan,
+                    "y": np.nan,
+                    "z": 0.0,
+                    "visibility": 0.0,
+                })
 
-        idx += 1
+        frame_idx += 1
 
     cap.release()
-    pose_est.close()
+    try:
+        pose_est.close()
+    except Exception:
+        pass
 
     if not rows:
         print(f"[WARN] Sin landmarks: {vpath}")
         return
 
-    df = pd.DataFrame(
-        rows,
-        columns=["video_id", "frame", "lmk_id", "x", "y", "z", "visibility"],
-    )
+    df = pd.DataFrame(rows)
     df.to_csv(out_csv, index=False, encoding="utf-8")
-    print(f"[OK] {out_csv}  ({len(df)} filas, frames={idx})")
+    print(f"[OK] {out_csv}  ({len(df)} filas, frames={frame_idx})")
 
 
 def main() -> None:

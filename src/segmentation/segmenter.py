@@ -246,8 +246,10 @@ class EnhancedSegmenter:
         """Suavizar señal para reducir ruido."""
         if len(sig) < self.smooth_win or self.smooth_win <= 1:
             return sig
-        window = np.ones(self.smooth_win, dtype=np.float32) / float(self.smooth_win)
-        return np.convolve(sig, window, mode="same")
+        # Crear kernel de suavizado (media móvil simple)
+        kernel_size = min(self.smooth_win, len(sig))
+        kernel = np.ones(kernel_size, dtype=np.float32) / float(kernel_size)
+        return np.convolve(sig, kernel, mode="same")
 
     def _find_peaks_robust(self, energy_signal: np.ndarray) -> List[int]:
         """Encontrar picos robustos en la señal de energía."""
@@ -256,20 +258,23 @@ class EnhancedSegmenter:
 
         smoothed = self._smooth_signal(energy_signal)
 
-        # Percentiles adaptativos
-        q75 = float(np.percentile(smoothed, 75))
-        q25 = float(np.percentile(smoothed, 25))
-        dynamic_threshold = q25 + 0.35 * (q75 - q25)
+        # Calcular percentiles y umbral adaptativo paso a paso
+        p75 = float(np.percentile(smoothed, 75))
+        p25 = float(np.percentile(smoothed, 25))
+        dynamic_threshold = p25 + 0.35 * (p75 - p25)
 
-        # Threshold efectivo
+        # Combinar umbral estático y dinámico
         effective_threshold = max(self.peak_thresh, dynamic_threshold * 0.5)
+
+        min_prominence = max(0.05, effective_threshold * 0.3)
 
         peaks, _ = signal.find_peaks(
             smoothed,
             height=effective_threshold,
             distance=self.min_peak_dist,
-            prominence=max(0.05, effective_threshold * 0.3),
+            prominence=min_prominence,
         )
+
         return peaks.tolist()
 
     def _expand_segment_around_peak(

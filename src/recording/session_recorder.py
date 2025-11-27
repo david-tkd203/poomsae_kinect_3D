@@ -110,17 +110,16 @@ class StreamRecorder:
 
         # Intentar estimar FPS real si hay suficientes muestras
         if self._buffer_timestamps:
-            dt = self._buffer_timestamps[-1] - self._buffer_timestamps[0]
-            n = len(self._buffer_timestamps)
+            dt_total = self._buffer_timestamps[-1] - self._buffer_timestamps[0]
+            n_samples = len(self._buffer_timestamps)
             # al menos 5 frames y >200ms para que la estimación tenga algo de sentido
-            if dt > 0.2 and n >= 5:
-                # ⚠️ CORREGIDO: usamos (n - 1) / dt porque hay n-1 intervalos entre n timestamps
-                fps_est = (n - 1) / max(dt, 1e-3)
-                # Para cámaras rápidas permitimos hasta 120fps,
-                # pero seguimos acotando a un rango razonable.
-                fps_est = float(max(10.0, min(120.0, fps_est)))
-                self._fps_estimated = fps_est
-                fps = fps_est
+            if dt_total > 0.2 and n_samples >= 5:
+                # ⚠️ CORREGIDO: usamos (n_samples - 1) / dt_total porque hay n-1 intervalos
+                fps_estimated = (n_samples - 1) / max(dt_total, 1e-3)
+                # Acotar la estimación a un rango razonable
+                fps_estimated = float(max(10.0, min(120.0, fps_estimated)))
+                self._fps_estimated = fps_estimated
+                fps = fps_estimated
 
         if fps <= 0:
             fps = 30.0  # fallback defensivo
@@ -132,8 +131,10 @@ class StreamRecorder:
 
         # Volcar lo que haya en el búfer
         if self._writer is not None and self._writer.isOpened() and self._buffer_frames:
-            for f in self._buffer_frames:
-                self._writer.write(f)
+            # Volcar frames acumulados en el writer recién creado
+            for buffered_frame in self._buffer_frames:
+                self._writer.write(buffered_frame)
+            # Limpiar búferes
             self._buffer_frames.clear()
             self._buffer_timestamps.clear()
 

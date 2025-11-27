@@ -108,14 +108,19 @@ class KinectCapture:
         joints = body.joints
         positions: Dict[int, np.ndarray] = {}
 
-        for j_id in range(PyKinectV2.JointType_Count):
-            joint = joints[j_id]
-            if joint.TrackingState == PyKinectV2.TrackingState_NotTracked:
+        # Iterar explícitamente por las articulaciones y usar variables
+        # intermedias para facilitar la lectura y la depuración.
+        for j_id, joint in enumerate(joints):
+            tracked = joint.TrackingState != PyKinectV2.TrackingState_NotTracked
+            if not tracked:
+                # Si no está trackeada, la omitimos del diccionario
                 continue
-            positions[j_id] = np.array(
-                [joint.Position.x, joint.Position.y, joint.Position.z],
-                dtype=np.float32,
-            )
+
+            x = float(joint.Position.x)
+            y = float(joint.Position.y)
+            z = float(joint.Position.z)
+
+            positions[j_id] = np.array([x, y, z], dtype=np.float32)
 
         return positions
 

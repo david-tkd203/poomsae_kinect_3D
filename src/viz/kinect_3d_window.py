@@ -253,9 +253,16 @@ class Kinect3DWindow(QtWidgets.QWidget):
                 continue
 
             cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
-            if not cap or not cap.isOpened():
-                if cap:
+            # Comprobar explícitamente si el objeto se creó y si el stream está abierto
+            if cap is None:
+                continue
+
+            opened = cap.isOpened()
+            if not opened:
+                try:
                     cap.release()
+                except Exception:
+                    pass
                 continue
 
             # Intentar configurar cámaras externas como 2QHD @ 60fps.

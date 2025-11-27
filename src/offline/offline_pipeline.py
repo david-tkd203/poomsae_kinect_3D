@@ -42,7 +42,8 @@ def _extract_landmarks_from_video(
     if not cap.isOpened():
         raise RuntimeError(f"No se pudo abrir el video: {video_path}")
 
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    # Obtener properties con valores por defecto razonables
+    fps = float(cap.get(cv2.CAP_PROP_FPS) or 30.0)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
 
     lms_3d: List[np.ndarray] = []
@@ -51,44 +52,47 @@ def _extract_landmarks_from_video(
 
     frame_idx = 0
 
-    while True:
-        ok, frame_bgr = cap.read()
-        if not ok or frame_bgr is None:
-            break
+    try:
+        while True:
+            ok, frame_bgr = cap.read()
+            if not ok or frame_bgr is None:
+                break
 
-        # Aquí asumimos que tu wrapper devuelve (lm_2d, lm_3d, visibility)
-        # Adáptalo si tu firma es distinta.
-        res = mp_pose.process(frame_bgr)
-        if isinstance(res, tuple):
-            if len(res) == 3:
-                lm_2d, lm_3d, visibility = res
-            elif len(res) == 2:
-                lm_2d, lm_3d = res
-                visibility = None
+            # Aquí asumimos que tu wrapper devuelve (lm_2d, lm_3d, visibility)
+            # Adáptalo si tu firma es distinta.
+            res = mp_pose.process(frame_bgr)
+            if isinstance(res, tuple):
+                if len(res) == 3:
+                    lm_2d, lm_3d, visibility = res
+                elif len(res) == 2:
+                    lm_2d, lm_3d = res
+                    visibility = None
+                else:
+                    lm_3d = res
+                    visibility = None
             else:
                 lm_3d = res
                 visibility = None
-        else:
-            lm_3d = res
-            visibility = None
 
-        if lm_3d is not None and lm_3d.size > 0:
-            lm_3d = np.asarray(lm_3d, dtype=np.float32)
-            lms_3d.append(lm_3d)
-            if visibility is not None:
-                vis_list.append(np.asarray(visibility, dtype=np.float32))
-            else:
-                vis_list.append(np.ones(lm_3d.shape[:2], dtype=np.float32))
-            ts_list.append(frame_idx / fps)
+            if lm_3d is not None and getattr(lm_3d, "size", 0) > 0:
+                lm_3d = np.asarray(lm_3d, dtype=np.float32)
+                lms_3d.append(lm_3d)
+                if visibility is not None:
+                    vis_list.append(np.asarray(visibility, dtype=np.float32))
+                else:
+                    # Si no hay visibilidad, asumimos todos visibles
+                    vis_list.append(np.ones(lm_3d.shape[:2], dtype=np.float32))
+                ts_list.append(frame_idx / fps)
 
-        frame_idx += 1
+            frame_idx += 1
 
-        if progress_cb is not None and total_frames > 0:
-            frac = min(1.0, frame_idx / total_frames)
-            progress_cb(f"Landmarks: {os.path.basename(video_path)} ({frame_idx}/{total_frames})", frac)
+            if progress_cb is not None and total_frames > 0:
+                frac = min(1.0, frame_idx / total_frames)
+                progress_cb(f"Landmarks: {os.path.basename(video_path)} ({frame_idx}/{total_frames})", frac)
+    finally:
+        cap.release()
 
-    cap.release()
-
+    # Normalizar salida para consumidores posteriores
     if not lms_3d:
         return {
             "landmarks_3d": np.zeros((0, 0, 3), dtype=np.float32),
@@ -112,11 +116,15 @@ def compute_pal_yang_score(
     Stub para tu score Pal Yang. Aquí solo dejo una estructura básica
     que puedes reemplazar por tu lógica de evaluación real.
     """
-    n_frames = landmarks_3d.shape[0]
-    duration_s = float(timestamps[-1] - timestamps[0]) if n_frames > 1 else 0.0
+    # Manejar casos en los que no hay frames/tiempos
+    n_frames = int(landmarks_3d.shape[0]) if getattr(landmarks_3d, "size", 0) > 0 else 0
+    if n_frames <= 1 or timestamps is None or timestamps.size == 0:
+        duration_s = 0.0
+    else:
+        duration_s = float(timestamps[-1] - timestamps[0])
 
-    # TODO: implementar tu métrica real
-    score_dummy = float(n_frames)  # solo un ejemplo
+    # TODO: implementar tu métrica real. Aquí usamos un dummy determinista
+    score_dummy = float(n_frames)
 
     return {
         "video": video_name,
@@ -138,7 +146,11 @@ def run_offline_pipeline(
     4) Exporta un reporte XLSX.
     5) Devuelve la ruta al .xlsx generado.
     """
-    video_files = sorted(glob.glob(os.path.join(capture_dir, "*.mp4")))
+    # Recolectar videos de forma explícita para facilitar depuración
+    glob_pattern = os.path.join(capture_dir, "*.mp4")
+    found = glob.glob(glob_pattern)
+    video_files = sorted(found)
+
     if not video_files:
         # Mensaje más amigable y orientador para usuarios no técnicos
         raise RuntimeError(
@@ -149,44 +161,58 @@ def run_offline_pipeline(
     if progress_cb is not None:
         progress_cb("Inicializando MediaPipe Pose...", 0.0)
 
+    # Crear el estimador de pose y asegurarnos de cerrarlo incluso en caso
+    # de error en el bucle principal.
     mp_pose = MediaPipePoseEstimator(model_complexity=POSE_MODEL_COMPLEXITY)
 
     rows: List[Dict[str, float]] = []
-    total_steps = len(video_files) * 2 + 1  # landmarks + score + reporte
+    # Calcular número aproximado de pasos para barra de progreso
+    n_videos = len(video_files)
+    steps_per_video = 2  # landmarks + scoring
+    total_steps = n_videos * steps_per_video + 1  # +1 para reporte final
     step = 0
 
-    for vf in video_files:
-        base = os.path.basename(vf)
-        name, _ = os.path.splitext(base)
+    try:
+        for vf in video_files:
+            base = os.path.basename(vf)
+            name, _ = os.path.splitext(base)
 
-        # --- Paso 1: landmarks ---
-        if progress_cb is not None:
-            progress_cb(f"Generando landmarks para {base}", step / total_steps)
+            # --- Paso 1: landmarks ---
+            if progress_cb is not None:
+                msg = f"Generando landmarks para {base}"
+                progress_cb(msg, step / total_steps)
 
-        lm_data = _extract_landmarks_from_video(vf, mp_pose)
-        step += 1
+            # Extraer landmarks (3D) y tiempos
+            lm_data = _extract_landmarks_from_video(vf, mp_pose)
+            step += 1
 
-        # Guardar landmarks en .npz por si quieres reprocesar o depurar
-        # (esto facilita reproducibilidad sin volver a ejecutar MediaPipe).
-        npz_path = os.path.join(capture_dir, f"{name}_landmarks.npz")
-        np.savez_compressed(
-            npz_path,
-            landmarks_3d=lm_data["landmarks_3d"],
-            visibility=lm_data["visibility"],
-            timestamps=lm_data["timestamps"],
-        )
+            # Guardar landmarks en .npz por si quieres reprocesar o depurar
+            # (esto facilita reproducibilidad sin volver a ejecutar MediaPipe).
+            npz_name = f"{name}_landmarks.npz"
+            npz_path = os.path.join(capture_dir, npz_name)
+            # Guardar de forma clara con variables intermedias
+            lms = lm_data.get("landmarks_3d")
+            vis = lm_data.get("visibility")
+            ts = lm_data.get("timestamps")
 
-        # --- Paso 2: score Pal Yang ---
-        if progress_cb is not None:
-            progress_cb(f"Calculando score Pal Yang para {base}", step / total_steps)
+            # Asegurarse de guardar arrays válidos (np.savez tolera None)
+            np.savez_compressed(npz_path, landmarks_3d=lms, visibility=vis, timestamps=ts)
 
-        score_row = compute_pal_yang_score(
-            lm_data["landmarks_3d"],
-            lm_data["timestamps"],
-            video_name=name,
-        )
-        rows.append(score_row)
-        step += 1
+            # --- Paso 2: score Pal Yang ---
+            if progress_cb is not None:
+                progress_cb(f"Calculando score Pal Yang para {base}", step / total_steps)
+
+            # Calcular score usando la función (placeholder)
+            score_row = compute_pal_yang_score(lms, ts, video_name=name)
+            rows.append(score_row)
+            step += 1
+    finally:
+        # Cerrar recursos de MediaPipe antes de continuar o propagar errores
+        try:
+            mp_pose.close()
+        except Exception:
+            # No queremos que fallos en close escondan la excepción previa
+            pass
 
     # --- Paso 3: reporte XLSX ---
     if progress_cb is not None:
