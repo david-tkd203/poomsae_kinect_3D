@@ -8,175 +8,213 @@ from typing import Dict, Any
 import numpy as np
 from PyQt5 import QtWidgets, QtCore
 
-try:
-    import pyqtgraph as pg
-    import pyqtgraph.opengl as gl
-except Exception as e:
-    print("ERROR: Necesitas pyqtgraph con soporte OpenGL:")
-    print("  pip install pyqtgraph PyOpenGL")
-    raise e
+import pyqtgraph as pg
+import pyqtgraph.opengl as gl
 
 
-class NPZ3DViewer(QtWidgets.QWidget):
+# ------------------------------------------------------------
+# Conectividad de esqueleto Kinect v2 (joint indices estándar)
+# ------------------------------------------------------------
+KINECT_EDGES = [
+    # Torso
+    (0, 1),   # SpineBase    - SpineMid
+    (1, 20),  # SpineMid     - SpineShoulder
+    (20, 3),  # SpineShoulder- Head
+    (0, 12),  # SpineBase    - HipLeft
+    (0, 16),  # SpineBase    - HipRight,
+
+    # Brazo izquierdo
+    (20, 4),  # SpineShoulder - ShoulderLeft
+    (4, 5),   # ShoulderLeft  - ElbowLeft
+    (5, 6),   # ElbowLeft     - WristLeft
+    (6, 7),   # WristLeft     - HandLeft
+    (7, 21),  # HandLeft      - HandTipLeft
+    (6, 22),  # WristLeft     - ThumbLeft
+
+    # Brazo derecho
+    (20, 8),  # SpineShoulder - ShoulderRight
+    (8, 9),   # ShoulderRight - ElbowRight
+    (9, 10),  # ElbowRight    - WristRight
+    (10, 11), # WristRight    - HandRight
+    (11, 23), # HandRight     - HandTipRight
+    (10, 24), # WristRight    - ThumbRight
+
+    # Pierna izquierda
+    (12, 13), # HipLeft  - KneeLeft
+    (13, 14), # KneeLeft - AnkleLeft
+    (14, 15), # AnkleLeft- FootLeft
+
+    # Pierna derecha
+    (16, 17), # HipRight  - KneeRight
+    (17, 18), # KneeRight - AnkleRight
+    (18, 19), # AnkleRight- FootRight
+]
+
+
+def _kinect_to_pg_coords(points: np.ndarray) -> np.ndarray:
     """
-    Visor sencillo para archivos .npz generados por Kinect3DRecorder.
+    Convierte coords Kinect (X right, Y up, Z forward) a coords PyQtGraph:
+    - X -> X
+    - Y -> Z
+    - Z -> -Y
 
-    Espera que el .npz tenga:
-      - cloud_frames: array (N,) dtype=object, cada elemento (Mi, 3)
-      - joint_frames: array (N,) dtype=object, cada elemento dict[int, (3,)]
-      - timestamps : array (N,)
+    Esto suele dar una vista 'natural' desde delante.
     """
+    if points.size == 0:
+        return points
+
+    x = points[:, 0]
+    y = points[:, 1]
+    z = points[:, 2]
+    return np.stack([x, z, -y], axis=1)
+
+
+class NpzKinectViewer(QtWidgets.QMainWindow):
     def __init__(self, npz_path: Path, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
-        self.setWindowTitle(f"NPZ 3D Viewer - {npz_path.name}")
+        self.setWindowTitle(f"Kinect NPZ Viewer - {npz_path.name}")
 
-        # ----------------- cargar datos -----------------
-        data = np.load(npz_path, allow_pickle=True)
-        self.cloud_frames = data.get("cloud_frames", None)
-        self.joint_frames = data.get("joint_frames", None)
-        self.timestamps = data.get("timestamps", None)
+        self.npz_path = npz_path
+        self.data = np.load(str(npz_path), allow_pickle=True)
+
+        self.cloud_frames = self.data.get("cloud_frames", None)
+        self.joint_frames = self.data.get("joint_frames", None)
+        self.timestamps = self.data.get("timestamps", None)
 
         if self.cloud_frames is None or self.joint_frames is None:
-            raise RuntimeError("El NPZ no contiene 'cloud_frames' o 'joint_frames'.")
+            raise RuntimeError("El archivo NPZ no contiene 'cloud_frames' o 'joint_frames'.")
 
-        self.n_frames = int(len(self.cloud_frames))
+        self.num_frames = len(self.cloud_frames)
+        self.frame_idx = 0
 
-        # ----------------- escena 3D -----------------
+        # ---- Widget principal OpenGL ----
         self.view = gl.GLViewWidget()
-        self.view.setSizePolicy(
-            QtWidgets.QSizePolicy.Expanding,
-            QtWidgets.QSizePolicy.Expanding,
+        self.view.setCameraPosition(distance=3.0, elevation=20, azimuth=45)
+        self.view.setBackgroundColor("k")
+
+        # Ejes y grid para referencia
+        self.grid = gl.GLGridItem()
+        self.grid.setSize(3, 3)
+        self.grid.setSpacing(0.5, 0.5)
+        self.view.addItem(self.grid)
+
+        # Eje XYZ
+        self.axis = gl.GLAxisItem()
+        self.axis.setSize(1, 1, 1)
+        self.view.addItem(self.axis)
+
+        # Nube de puntos (silueta corporal)
+        self.cloud_item = gl.GLScatterPlotItem(
+            pos=np.zeros((1, 3)),
+            size=2.0,        # tamaño de punto (subir si quieres verla más "densa")
+            pxMode=True,
         )
-        self.view.opts["distance"] = 2.5  # alejar un poco la cámara
-        self.view.setBackgroundColor("k")  # fondo negro
-
-        # rejilla de referencia
-        grid = gl.GLGridItem()
-        grid.setSize(2, 2, 0)
-        grid.setSpacing(0.2, 0.2, 0.2)
-        self.view.addItem(grid)
-
-        # nube de puntos (cloud)
-        self.cloud_item = gl.GLScatterPlotItem()
-        self.cloud_item.setGLOptions("additive")  # blending simple
         self.view.addItem(self.cloud_item)
 
-        # articulaciones (joints) – puntos más grandes
-        self.joint_item = gl.GLScatterPlotItem()
-        self.joint_item.setGLOptions("additive")
-        self.view.addItem(self.joint_item)
-
-        # ----------------- controles UI -----------------
-        self.slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.slider.setRange(0, max(0, self.n_frames - 1))
-        self.slider.valueChanged.connect(self.set_frame)
-
-        self.label_info = QtWidgets.QLabel()
-        self.label_info.setText("Frame 0")
-
-        # botones para activar/desactivar nubes / joints
-        self.chk_cloud = QtWidgets.QCheckBox("Mostrar nube")
-        self.chk_cloud.setChecked(True)
-        self.chk_cloud.stateChanged.connect(self._update_visibility)
-
-        self.chk_joints = QtWidgets.QCheckBox("Mostrar joints")
-        self.chk_joints.setChecked(True)
-        self.chk_joints.stateChanged.connect(self._update_visibility)
-
-        # layout
-        controls_layout = QtWidgets.QHBoxLayout()
-        controls_layout.addWidget(self.slider)
-        controls_layout.addWidget(self.chk_cloud)
-        controls_layout.addWidget(self.chk_joints)
-
-        main_layout = QtWidgets.QVBoxLayout(self)
-        main_layout.addWidget(self.view, stretch=1)
-        main_layout.addLayout(controls_layout)
-        main_layout.addWidget(self.label_info)
-
-        # mostrar primer frame
-        if self.n_frames > 0:
-            self.set_frame(0)
-
-    # -------------------------------------------------
-    # Actualización de frame
-    # -------------------------------------------------
-    def set_frame(self, idx: int | None) -> None:
-        if idx is None:
-            return
-        idx = int(idx)
-        if idx < 0 or idx >= self.n_frames:
-            return
-
-        # ----- nube de puntos -----
-        cloud = self.cloud_frames[idx]
-        if cloud is None:
-            cloud = np.zeros((0, 3), dtype=np.float32)
-        cloud = np.asarray(cloud, dtype=np.float32)
-
-        if cloud.size > 0:
-            # opcional: reordenar ejes o escalar si lo necesitas
-            # ej: invertir Z para que "arriba" sea +Z
-            # cloud = cloud[:, [0, 2, 1]]
-            self.cloud_item.setData(
-                pos=cloud,
-                size=1.0,
-                pxMode=False,
-            )
-        else:
-            # nube vacía → poner un punto invisible
-            self.cloud_item.setData(
-                pos=np.zeros((1, 3), dtype=np.float32),
-                size=0.0,
-                pxMode=False,
-            )
-
-        # ----- joints -----
-        joints_obj: Any = self.joint_frames[idx]
-
-        # En tu recorder guardas dict[int, np.ndarray], así que
-        # deberíamos recibir directamente un dict. Pero si viene
-        # envuelto en array(object), lo desempaquetamos.
-        if isinstance(joints_obj, np.ndarray) and joints_obj.dtype == object and joints_obj.size == 1:
-            joints = joints_obj.item()
-        else:
-            joints = joints_obj
-
-        pts = None
-        if isinstance(joints, dict) and joints:
-            pts = np.vstack([np.asarray(p, dtype=np.float32) for p in joints.values()])
-
-        if pts is not None and pts.size > 0:
-            self.joint_item.setData(
-                pos=pts,
-                size=8.0,
-                pxMode=False,
-            )
-        else:
-            self.joint_item.setData(
-                pos=np.zeros((1, 3), dtype=np.float32),
-                size=0.0,
-                pxMode=False,
-            )
-
-        # ----- texto info -----
-        t = 0.0
-        if self.timestamps is not None and len(self.timestamps) > idx:
-            t = float(self.timestamps[idx])
-
-        self.label_info.setText(
-            f"Frame {idx+1}/{self.n_frames}  |  t = {t:.3f} s"
+        # Esqueleto: un line plot para todas las aristas
+        self.skeleton_item = gl.GLLinePlotItem(
+            pos=np.zeros((2, 3)),
+            mode="lines",
+            width=2.0,
+            antialias=True,
         )
+        self.view.addItem(self.skeleton_item)
 
-        # aplicar visibilidad según checkboxes
-        self._update_visibility()
+        # Layout Qt
+        central = QtWidgets.QWidget()
+        vlayout = QtWidgets.QVBoxLayout(central)
+        vlayout.addWidget(self.view)
 
-    # -------------------------------------------------
-    # Visibilidad de nubes / joints
-    # -------------------------------------------------
-    def _update_visibility(self) -> None:
-        self.cloud_item.setVisible(self.chk_cloud.isChecked())
-        self.joint_item.setVisible(self.chk_joints.isChecked())
+        # Barra de estado para mostrar frame / tiempo
+        self.status = QtWidgets.QStatusBar()
+        self.setStatusBar(self.status)
+
+        self.setCentralWidget(central)
+
+        # Timer de animación
+        self.timer = QtCore.QTimer(self)
+        self.timer.timeout.connect(self._next_frame)
+        self.timer.start(33)  # ~30 FPS de reproducción
+
+        # Atajos de teclado
+        QtWidgets.QShortcut(QtCore.Qt.Key_Space, self, activated=self.toggle_play)
+        QtWidgets.QShortcut(QtCore.Qt.Key_Right, self, activated=self.step_forward)
+        QtWidgets.QShortcut(QtCore.Qt.Key_Left, self, activated=self.step_backward)
+
+        self.playing = True
+        self._update_frame(0)
+
+    # ------------------------------------------------------------------
+    # Control de reproducción
+    # ------------------------------------------------------------------
+    def toggle_play(self) -> None:
+        self.playing = not self.playing
+
+    def step_forward(self) -> None:
+        self.playing = False
+        self._next_frame()
+
+    def step_backward(self) -> None:
+        self.playing = False
+        self.frame_idx = (self.frame_idx - 1) % self.num_frames
+        self._update_frame(self.frame_idx)
+
+    def _next_frame(self) -> None:
+        if not self.playing:
+            return
+        self.frame_idx = (self.frame_idx + 1) % self.num_frames
+        self._update_frame(self.frame_idx)
+
+    # ------------------------------------------------------------------
+    # Actualización de escena
+    # ------------------------------------------------------------------
+    def _update_frame(self, idx: int) -> None:
+        # ---- Nube de puntos ----
+        cloud = self.cloud_frames[idx]
+        if isinstance(cloud, np.ndarray):
+            pts = cloud
+        else:
+            pts = np.asarray(cloud, dtype=np.float32)
+
+        if pts is None or pts.size == 0:
+            pts_pg = np.zeros((1, 3), dtype=np.float32)
+        else:
+            pts_pg = _kinect_to_pg_coords(pts.astype(np.float32))
+
+        # Ajustar tamaño si quieres ver más silueta
+        self.cloud_item.setData(pos=pts_pg, size=2.0)
+
+        # ---- Esqueleto ----
+        joints_obj = self.joint_frames[idx]
+        if isinstance(joints_obj, dict):
+            joints_dict: Dict[int, np.ndarray] = joints_obj
+        else:
+            # Al cargar np.array(dtype=object), cada elemento puede ser el dict directamente
+            joints_dict = joints_obj.item() if hasattr(joints_obj, "item") else joints_obj
+
+        # Creamos un array de puntos conectados según KINECT_EDGES
+        lines_pts = []
+        for j0, j1 in KINECT_EDGES:
+            p0 = joints_dict.get(j0, None)
+            p1 = joints_dict.get(j1, None)
+            if p0 is None or p1 is None:
+                continue
+            p0 = np.asarray(p0, dtype=np.float32).reshape(1, 3)
+            p1 = np.asarray(p1, dtype=np.float32).reshape(1, 3)
+            seg = np.vstack([p0, p1])
+            seg_pg = _kinect_to_pg_coords(seg)
+            lines_pts.append(seg_pg)
+
+        if lines_pts:
+            all_lines = np.vstack(lines_pts)
+        else:
+            all_lines = np.zeros((2, 3), dtype=np.float32)
+
+        self.skeleton_item.setData(pos=all_lines)
+
+        # ---- Estado ----
+        t = float(self.timestamps[idx]) if self.timestamps is not None else 0.0
+        self.status.showMessage(f"Frame {idx+1}/{self.num_frames}  |  t = {t:.3f} s")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -184,18 +222,18 @@ def main(argv: list[str] | None = None) -> None:
         argv = sys.argv[1:]
 
     if not argv:
-        print("Uso: python -m src.tools.view_kinect_npz RUTA/AL/ARCHIVO.npz")
+        print("Uso: python -m src.tools.view_kinect_npz ruta/al/archivo.npz")
         sys.exit(1)
 
     npz_path = Path(argv[0])
     if not npz_path.exists():
-        print(f"ERROR: no se encontró el archivo: {npz_path}")
+        print(f"NPZ no encontrado: {npz_path}")
         sys.exit(1)
 
     app = QtWidgets.QApplication(sys.argv)
-    viewer = NPZ3DViewer(npz_path)
-    viewer.resize(900, 700)
-    viewer.show()
+    w = NpzKinectViewer(npz_path)
+    w.resize(960, 720)
+    w.show()
     sys.exit(app.exec_())
 
 

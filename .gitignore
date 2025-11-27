@@ -1,5 +1,11 @@
 # Ignorados del proyecto
 reports/
+# Ignorar carpetas de datos y capturas generadas por la aplicación
+# Usamos la forma con slash para indicar directorio raíz en el repo
+captures/
+data/
+
+# Rutas específicas históricas (compatibilidad con versiones previas)
 data/landmarks/
 data/moves_ml/
 data/previews/
