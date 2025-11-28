@@ -128,18 +128,27 @@ def extract_for_video(
         # Procesar con el wrapper (espera BGR). Normalizar posible resultado
         try:
             proc_result = pose_est.process(frame_bgr)
-        except Exception as exc:
+        except Exception:
             proc_result = (None, None)
 
-        if isinstance(proc_result, tuple) and len(proc_result) >= 1:
-            pose2d = proc_result[0]
+        # El wrapper devuelve (landmarks_2d, landmarks_3d). landmarks_2d: (N,3) -> x,y,visibility
+        # landmarks_3d: (N,3) -> x,y,z en coordenadas world. Usamos z desde landmarks_3d si está disponible.
+        pose2d = None
+        pose3d = None
+        if isinstance(proc_result, tuple):
+            if len(proc_result) >= 1:
+                pose2d = proc_result[0]
+            if len(proc_result) >= 2:
+                pose3d = proc_result[1]
         else:
             pose2d = proc_result
 
-        # pose2d esperado: (N_LANDMARKS, 4) -> x,y,z,visibility
+        # pose2d esperado: (N_LANDMARKS, 3) -> x,y,visibility
         if pose2d is not None and getattr(pose2d, "shape", (0,))[0] == N_LANDMARKS:
+            has_3d = (pose3d is not None and getattr(pose3d, "shape", (0,))[0] == N_LANDMARKS)
             for j in range(N_LANDMARKS):
-                x, y, z, v = pose2d[j]
+                x, y, v = pose2d[j]
+                z = float(pose3d[j][2]) if has_3d else 0.0
 
                 # Normalizar valores y aplicar umbral de visibility
                 valid_xy = np.isfinite(x) and np.isfinite(y) and (v >= vis_min)
@@ -157,7 +166,7 @@ def extract_for_video(
                     "lmk_id": int(j),
                     "x": x_val,
                     "y": y_val,
-                    "z": float(z),
+                    "z": z,
                     "visibility": float(v),
                 })
         else:

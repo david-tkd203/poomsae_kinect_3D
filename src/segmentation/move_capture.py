@@ -6,8 +6,8 @@ poomsae (ej. 8yang). Contiene:
  - `SpecAwareSegmenter`: heurísticas y energía para detectar movimientos.
  - `PoseClassifier`: heurístico (y opción ML) para clasificar posturas.
 
-Los cambios realizados son principalmente docstrings y comentarios
-para que el código resulte más claro y "hecho por una persona".
+Los docstrings y comentarios han sido organizados para mejorar la
+legibilidad y facilitar su mantenimiento.
 """
 from __future__ import annotations
 import math, json, yaml
@@ -903,6 +903,7 @@ def capture_moves_with_spec(
     pose_spec_path: Path = Path("config/patterns/pose_spec.json"),
     use_ml_classifier: bool = False,
     ml_model_path: Optional[Path] = None,
+    override_fps: Optional[float] = None,
 ) -> CaptureResult:
     """
     Pipeline principal:
@@ -922,13 +923,22 @@ def capture_moves_with_spec(
     df = load_landmarks_csv(csv_path)
     nframes = int(df["frame"].max()) + 1
 
+    # Determinar FPS a usar para cálculo de energías/gradientes.
+    # - Si se indica `override_fps` preferimos ese valor (útil si el video fue re-encodeado o ralentizado).
+    # - En caso contrario, intentamos leer el FPS desde el preview/video; si no está disponible usamos 30.
     fps = 30.0
-    if video_path and video_path.exists():
-        cap = cv2.VideoCapture(str(video_path))
-        fps_read = cap.get(cv2.CAP_PROP_FPS)
-        if fps_read and fps_read > 0:
-            fps = float(fps_read)
-        cap.release()
+    if override_fps is not None:
+        try:
+            fps = float(override_fps)
+        except Exception:
+            fps = 30.0
+    else:
+        if video_path and video_path.exists():
+            cap = cv2.VideoCapture(str(video_path))
+            fps_read = cap.get(cv2.CAP_PROP_FPS)
+            if fps_read and fps_read > 0:
+                fps = float(fps_read)
+            cap.release()
 
     print(f"[CAPTURE] Procesando {csv_path.stem} (frames={nframes}, fps={fps:.1f})")
 

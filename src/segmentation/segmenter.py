@@ -6,10 +6,10 @@ import scipy.signal as signal
 
 
 class EnhancedSegmenter:
-    """Segmentador mejorado orientado a Po omsae (comentarios humanos).
+    """Segmentador mejorado orientado a Poomsae.
 
-    Está pensado para ser fácil de entender por un lector humano. Los
-    comentarios y nombres de métodos explican la intención: combinar
+    Diseñado para ser legible y fácil de mantener: los comentarios y
+    nombres de métodos explican la intención del código. Combina
     diferentes fuentes de 'energía' (velocidad/ángulos/orientación)
     para detectar ventanas temporales que correspondan a movimientos.
     """

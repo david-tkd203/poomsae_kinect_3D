@@ -12,17 +12,26 @@ class MediaPipePoseEstimator:
     Wrapper de MediaPipe Pose:
     - Recibe frames BGR (OpenCV).
     - Devuelve landmarks 2D y 3D (world) como arrays numpy.
+
+    El constructor ahora expone los parámetros de confianza de detección
+    y trackeo para permitir ajustar la sensibilidad desde herramientas
+    que invocan este wrapper.
     """
 
-    def __init__(self, model_complexity: int = 1):
+    def __init__(
+        self,
+        model_complexity: int = 1,
+        min_detection_confidence: float = 0.5,
+        min_tracking_confidence: float = 0.5,
+    ):
         mp_pose = mp.solutions.pose
 
         self._pose = mp_pose.Pose(
             static_image_mode=False,
             model_complexity=model_complexity,
             enable_segmentation=False,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5,
+            min_detection_confidence=float(min_detection_confidence),
+            min_tracking_confidence=float(min_tracking_confidence),
         )
         self._mp_pose = mp_pose
 

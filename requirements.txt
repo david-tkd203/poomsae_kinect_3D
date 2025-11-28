@@ -6,3 +6,6 @@ mediapipe==0.10.14
 opencv-python==4.10.0.84
 python-dotenv==1.0.1
 PyKinect2 @ git+https://github.com/Kinect/PyKinect2.git
+
+# Document generation (optional)
+python-docx==0.8.12

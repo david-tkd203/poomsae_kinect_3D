@@ -2,8 +2,8 @@
 
 Este módulo agrupa utilidades para grabar streams de vídeo (con
 estimación automática del FPS) y para almacenar datos 3D de Kinect
-en un archivo `.npz` comprimido. La intención de los comentarios y
-docstrings aquí es facilitar la comprensión a un lector humano.
+en un archivo `.npz` comprimido. Los comentarios y docstrings están
+orientados a facilitar la comprensión y el mantenimiento del código.
 """
 from __future__ import annotations
 
