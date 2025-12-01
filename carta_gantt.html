@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Carta Gantt – Prototipo Poomsae (por semanas)</title>
+  <style>
+    :root {
+      --border-soft: #e5e7eb;
+      --bg-soft: #f9fafb;
+      --text-main: #111827;
+      --text-muted: #6b7280;
+      --grid-line: #f3f4f6;
+    }
+
+    body {
+      font-family: "Helvetica", Arial, sans-serif;
+      background: #ffffff;
+      margin: 20px;
+      color: var(--text-main);
+    }
+
+    h1 {
+      text-align: center;
+      font-size: 22px;
+      margin-bottom: 4px;
+    }
+
+    .subtitle {
+      text-align: center;
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-bottom: 20px;
+    }
+
+    .gantt-wrapper {
+      max-width: 1150px;
+      margin: 0 auto;
+      border: 1px solid var(--border-soft);
+      border-radius: 10px;
+      padding: 16px 20px 20px 20px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+      background: #ffffff;
+    }
+
+    .gantt-grid {
+      display: grid;
+      grid-template-columns: 260px 1fr; /* etiquetas | cronograma */
+      column-gap: 10px;
+      row-gap: 6px;
+      font-size: 12px;
+      align-items: flex-start;
+    }
+
+    .week-header-row {
+      display: grid;
+      grid-template-columns: repeat(20, 1fr); /* 20 semanas */
+      font-size: 10px;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border-soft);
+      padding-bottom: 4px;
+      margin-bottom: 4px;
+    }
+
+    .week-cell {
+      text-align: center;
+      padding: 2px 0 4px 0;
+      border-left: 1px solid var(--grid-line);
+      line-height: 1.25;
+    }
+
+    .week-cell:first-child {
+      border-left: none;
+    }
+
+    .week-label {
+      font-weight: 600;
+      display: block;
+    }
+
+    .week-dates {
+      display: block;
+    }
+
+    .gantt-label-header {
+      font-weight: 600;
+      color: #374151;
+      padding-bottom: 4px;
+      border-bottom: 1px solid var(--border-soft);
+    }
+
+    .gantt-timeline-header {
+      font-weight: 600;
+      color: #374151;
+      padding-bottom: 4px;
+      border-bottom: 1px solid var(--border-soft);
+      text-align: center;
+    }
+
+    .task-label {
+      padding: 4px 0;
+    }
+
+    .task-label span {
+      display: block;
+      line-height: 1.3;
+    }
+
+    .task-label .sprint {
+      font-weight: 600;
+    }
+
+    .task-label .fechas {
+      color: var(--text-muted);
+      font-size: 11px;
+    }
+
+    .task-label .objetivo {
+      color: #4b5563;
+      font-size: 11px;
+    }
+
+    .timeline-row {
+      display: grid;
+      grid-template-columns: repeat(20, 1fr); /* 20 semanas */
+      height: 22px;
+      background: var(--bg-soft);
+      border-radius: 6px;
+      border: 1px solid var(--grid-line);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .timeline-row::before {
+      /* líneas verticales suaves por semana */
+      content: "";
+      position: absolute;
+      inset: 0;
+      background-image: linear-gradient(
+        to right,
+        var(--grid-line) 1px,
+        transparent 1px
+      );
+      background-size: calc(100% / 20) 100%;
+      opacity: 0.7;
+      pointer-events: none;
+    }
+
+    .bar {
+      position: relative;
+      margin: 2px 2px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      padding-left: 6px;
+      font-size: 11px;
+      color: #f9fafb;
+      white-space: nowrap;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.35);
+      z-index: 1; /* por encima de las líneas de fondo */
+    }
+
+    .bar.s1 { background: linear-gradient(135deg, #3b82f6, #2563eb); }
+    .bar.s2 { background: linear-gradient(135deg, #22c55e, #16a34a); }
+    .bar.s3 { background: linear-gradient(135deg, #a855f7, #7c3aed); }
+    .bar.s4 { background: linear-gradient(135deg, #ec4899, #db2777); }
+    .bar.s5 { background: linear-gradient(135deg, #f97316, #ea580c); }
+    .bar.s6 { background: linear-gradient(135deg, #0ea5e9, #0284c7); }
+    .bar.s7 { background: linear-gradient(135deg, #22c55e, #15803d); }
+    .bar.s8 { background: linear-gradient(135deg, #6b7280, #4b5563); }
+
+    .legend {
+      max-width: 1150px;
+      margin: 10px auto 0 auto;
+      font-size: 11px;
+      color: #4b5563;
+    }
+
+    .legend ul {
+      padding-left: 18px;
+      margin: 4px 0 0 0;
+    }
+
+    .legend li {
+      margin-bottom: 2px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Carta Gantt – Prototipo de evaluación de exactitud técnica en Poomsae</h1>
+  <div class="subtitle">
+    Línea de tiempo por semanas: 04/08/2025 – 16/12/2025
+  </div>
+
+  <div class="gantt-wrapper">
+    <div class="gantt-grid">
+      <!-- Columna vacía encima de las semanas -->
+      <div></div>
+
+      <!-- Cabecera de semanas (20 semanas) -->
+      <div class="week-header-row">
+        <div class="week-cell">
+          <span class="week-label">Sem 1</span>
+          <span class="week-dates">04–10 Ago</span>
+        </div>
+        <div class="week-cell">
+          <span class="week-label">Sem 2</span>
+          <span class="week-dates">11–17 Ago</span>
+        </div>
+        <div class="week-cell">
+          <span class="week-label">Sem 3</span>
+          <span class="week-dates">18–24 Ago</span>
+        </div>
+        <div class="week-cell">
+          <span class="week-label">Sem 4</span>
+          <span class="week-dates">25–31 Ago</span>
+        </div>
+        <div class="week-cell">
+          <span class="week-label">Sem 5</span>
+          <span class="week-dates">01–07 Sep</span>
+        </div>
+        <div class="week-cell">
+          <span class="week-label">Sem 6</span>
+          <span class="week-dates">08–14 Sep</span>
+        </div>
+        <div class="week-cell">
+          <span class="week-label">Sem 7</span>
+          <span class="week-dates">15–21 Sep</span>
+        </div>
+        <div class="week-cell">
+          <span class="week-label">Sem 8</span>
+          <span class="week-dates">22–28 Sep</span>
+        </div>
+        <div class="week-cell">
+          <span class="week-label">Sem 9</span>
+          <span class="week-dates">29 Sep–05 Oct</span>
+        </div>
+        <div class="week-cell">
+          <span class="week-label">Sem 10</span>
+          <span class="week-dates">06–12 Oct</span>
+        </div>
+        <div class="week-cell">
+          <span class="week-label">Sem 11</span>
+          <span class="week-dates">13–19 Oct</span>
+        </div>
+        <div class="week-cell">
+          <span class="week-label">Sem 12</span>
+          <span class="week-dates">20–26 Oct</span>
+        </div>
+        <div class="week-cell">
+          <span class="week-label">Sem 13</span>
+          <span class="week-dates">27 Oct–02 Nov</span>
+        </div>
+        <div class="week-cell">
+          <span class="week-label">Sem 14</span>
+          <span class="week-dates">03–09 Nov</span>
+        </div>
+        <div class="week-cell">
+          <span class="week-label">Sem 15</span>
+          <span class="week-dates">10–16 Nov</span>
+        </div>
+        <div class="week-cell">
+          <span class="week-label">Sem 16</span>
+          <span class="week-dates">17–23 Nov</span>
+        </div>
+        <div class="week-cell">
+          <span class="week-label">Sem 17</span>
+          <span class="week-dates">24–30 Nov</span>
+        </div>
+        <div class="week-cell">
+          <span class="week-label">Sem 18</span>
+          <span class="week-dates">01–07 Dic</span>
+        </div>
+        <div class="week-cell">
+          <span class="week-label">Sem 19</span>
+          <span class="week-dates">08–14 Dic</span>
+        </div>
+        <div class="week-cell">
+          <span class="week-label">Sem 20</span>
+          <span class="week-dates">15–21 Dic</span>
+        </div>
+      </div>
+
+      <!-- Encabezados de columnas -->
+      <div class="gantt-label-header">Sprint / Fechas / Objetivo vinculado</div>
+      <div class="gantt-timeline-header">Línea de tiempo (semanas)</div>
+
+      <!-- S1 -->
+      <div class="task-label">
+        <span class="sprint">S1 – Configuración del entorno de captura</span>
+        <span class="fechas">04/08/2025 – 17/08/2025</span>
+        <span class="objetivo">OE1 – Instalación física de cámaras y Kinect</span>
+      </div>
+      <div class="timeline-row">
+        <!-- Semanas 1–2 -->
+        <div
+          class="bar s1"
+          style="grid-column: 1 / 3;"
+          title="DoD S1: Grabación exitosa de Taegeuk Pal Jang completa, sin pérdida de frames y con sincronización visual verificada."
+        >
+          S1
+        </div>
+      </div>
+
+      <!-- S2 -->
+      <div class="task-label">
+        <span class="sprint">S2 – Creación de dataset y preprocesamiento</span>
+        <span class="fechas">18/08/2025 – 31/08/2025</span>
+        <span class="objetivo">OE2 – Dataset base de 30 videos y extracción de coordenadas</span>
+      </div>
+      <div class="timeline-row">
+        <!-- Semanas 3–4 -->
+        <div
+          class="bar s2"
+          style="grid-column: 3 / 5;"
+          title="DoD S2: Dataset CSV/JSON con coordenadas (x,y,z) de las 30 ejecuciones de referencia, listo para análisis."
+        >
+          S2
+        </div>
+      </div>
+
+      <!-- S3 -->
+      <div class="task-label">
+        <span class="sprint">S3 – Algoritmo de segmentación temporal</span>
+        <span class="fechas">01/09/2025 – 14/09/2025</span>
+        <span class="objetivo">OE2 – Detección de unidades técnicas mediante energía cinética</span>
+      </div>
+      <div class="timeline-row">
+        <!-- Semanas 5–6 -->
+        <div
+          class="bar s3"
+          style="grid-column: 5 / 7;"
+          title="DoD S3: El sistema recorta automáticamente el video en los movimientos del Pal Jang, separando pausas de acciones activas."
+        >
+          S3
+        </div>
+      </div>
+
+      <!-- S4 -->
+      <div class="task-label">
+        <span class="sprint">S4 – Entrenamiento del modelo Random Forest</span>
+        <span class="fechas">15/09/2025 – 28/09/2025</span>
+        <span class="objetivo">OE3 – Clasificación Correcto / Error Leve / Error Grave</span>
+      </div>
+      <div class="timeline-row">
+        <!-- Semanas 7–8 -->
+        <div
+          class="bar s4"
+          style="grid-column: 7 / 9;"
+          title="DoD S4: Precisión preliminar > 70% en pruebas internas de clasificación de movimientos individuales."
+        >
+          S4
+        </div>
+      </div>
+
+      <!-- S5 -->
+      <div class="task-label">
+        <span class="sprint">S5 – Integración de reglas de puntuación</span>
+        <span class="fechas">29/09/2025 – 12/10/2025</span>
+        <span class="objetivo">OE3 – Cálculo de nota final (base 4.0 menos deducciones)</span>
+      </div>
+      <div class="timeline-row">
+        <!-- Semanas 9–10 -->
+        <div
+          class="bar s5"
+          style="grid-column: 9 / 11;"
+          title="DoD S5: Al procesar una secuencia completa, el sistema entrega un puntaje numérico final consistente con los errores detectados."
+        >
+          S5
+        </div>
+      </div>
+
+      <!-- S6 -->
+      <div class="task-label">
+        <span class="sprint">S6 – Desarrollo de interfaz y reportes</span>
+        <span class="fechas">13/10/2025 – 26/10/2025</span>
+        <span class="objetivo">OE4 – GUI y módulo de exportación a Excel con timestamps</span>
+      </div>
+      <div class="timeline-row">
+        <!-- Semanas 11–12 -->
+        <div
+          class="bar s6"
+          style="grid-column: 11 / 13;"
+          title="DoD S6: El usuario carga un video y obtiene un archivo Excel con desglose Movimiento–Deducción–Tiempo sin errores de formato."
+        >
+          S6
+        </div>
+      </div>
+
+      <!-- S7 -->
+      <div class="task-label">
+        <span class="sprint">S7 – Validación experimental jueces vs prototipo</span>
+        <span class="fechas">27/10/2025 – 16/11/2025</span>
+        <span class="objetivo">OE5 – Comparación con jueces humanos (ground truth)</span>
+      </div>
+      <div class="timeline-row">
+        <!-- Semanas 13–15 -->
+        <div
+          class="bar s7"
+          style="grid-column: 13 / 16;"
+          title="DoD S7: Tablas comparativas generadas y datos suficientes para calcular ICC y MAE entre nota automática y nota promedio de jueces."
+        >
+          S7
+        </div>
+      </div>
+
+      <!-- S8 -->
+      <div class="task-label">
+        <span class="sprint">S8 – Documentación final y empaquetado</span>
+        <span class="fechas">17/11/2025 – 16/12/2025</span>
+        <span class="objetivo">Cierre – Redacción de tesis y empaquetado de código</span>
+      </div>
+      <div class="timeline-row">
+        <!-- Semanas 16–20 -->
+        <div
+          class="bar s8"
+          style="grid-column: 16 / 21;"
+          title="DoD S8: Documento de tesis completo con análisis de resultados y conclusiones, código final subido al repositorio con manual de usuario."
+        >
+          S8
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="legend">
+    <strong>Notas:</strong>
+    <ul>
+      <li>Cada columna representa una semana calendario desde el 04/08/2025 (Sem 1) al 21/12/2025 (Sem 20).</li>
+      <li>Las fechas de inicio y término de cada sprint se muestran explícitamente y su barra abarca las semanas correspondientes.</li>
+      <li>Al pasar el cursor sobre cada barra se visualiza el criterio de aceptación (Definition of Done) asociado.</li>
+    </ul>
+  </div>
+</body>
+</html>

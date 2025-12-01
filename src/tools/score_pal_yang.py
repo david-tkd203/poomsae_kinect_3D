@@ -717,7 +717,16 @@ def score_one_video(
         wrist_id = 15 if limb == "L_WRIST" else 16
         # Nivel: mediana en [aa,bb]
         rel = _wrist_rel_series_robust(df, aa, bb, wrist_id)
-        y_rel_end = float(np.nanmedian(rel)) if rel.size else float("nan")
+        # Evitar RuntimeWarning cuando rel está lleno de NaN: comprobar valores finitos
+        if rel.size and np.isfinite(rel).any():
+            y_rel_end = float(np.nanmedian(rel))
+        else:
+            y_rel_end = float("nan")
+            # marcar en debug que no hay valores válidos para la serie de muñeca
+            # esto ayuda a diagnosticar segmentos con datos faltantes
+            # (no es fatal: se manejará como nivel MOMTONG más adelante)
+            # print opcional para debug, descomentar si se desea verbose
+            # print(f"[DEBUG] rel series empty/NaN for video={video_id}, move={e.get('_key')}, frames={aa}-{bb}")
         level_meas = _level_from_spec_thresholds(y_rel_end, lvl_cfg)
         cls_lvl = _classify_level(level_meas, level_exp)
 

@@ -10,6 +10,8 @@ from PyQt5 import QtWidgets, QtCore
 
 import pyqtgraph as pg
 import pyqtgraph.opengl as gl
+import cv2
+import argparse
 
 
 # ------------------------------------------------------------
@@ -344,14 +346,189 @@ class NpzKinectViewer(QtWidgets.QMainWindow):
         return base_pos
 
 
+def export_npz_to_mp4(npz_path: Path, out_mp4: Path, *, fps: Optional[float] = None, size=(1280,720), max_cloud_points: int = 1000) -> None:
+    """Exportar un .npz de Kinect a un MP4 sencillo (esqueleto + nube reducida).
+
+    - npz_path: archivo con arrays `cloud_frames`, `joint_frames`, `timestamps`.
+    - out_mp4: ruta de salida .mp4
+    - fps: si None, se infiere de `timestamps` (si están) o se usa 30
+    - size: (W,H) pixels
+    - max_cloud_points: máximo de puntos de nube a dibujar por frame (muestreo)
+    """
+    raw = np.load(str(npz_path), allow_pickle=True)
+    cloud_frames = list(raw.get("cloud_frames", []))
+    joint_frames = list(raw.get("joint_frames", []))
+    timestamps = list(raw.get("timestamps", []))
+
+    if not joint_frames and not cloud_frames:
+        raise RuntimeError("NPZ no contiene 'joint_frames' ni 'cloud_frames'")
+
+    nframes = max(len(joint_frames), len(cloud_frames))
+    if nframes == 0:
+        raise RuntimeError("NPZ vacío")
+
+    # Infer FPS
+    if fps is None:
+        if timestamps and len(timestamps) >= 2:
+            dt = np.diff(np.asarray(timestamps, dtype=float))
+            dt = dt[np.isfinite(dt)]
+            fps = float(round(1.0 / float(np.mean(dt)))) if dt.size else 30.0
+        else:
+            fps = 30.0
+
+    W, H = int(size[0]), int(size[1])
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out_mp4.parent.mkdir(parents=True, exist_ok=True)
+    vw = cv2.VideoWriter(str(out_mp4), fourcc, float(fps), (W, H))
+
+    # Precompute global bounds for normalization
+    all_pts = []
+    for cf in cloud_frames:
+        if cf is None:
+            continue
+        a = np.asarray(cf)
+        if a.size:
+            all_pts.append(a.reshape(-1,3))
+    for jf in joint_frames:
+        jd = None
+        if isinstance(jf, dict):
+            jd = np.vstack([np.asarray(v).reshape(1,3) for v in jf.values()]) if jf else None
+        elif hasattr(jf, 'item'):
+            maybe = jf.item()
+            if isinstance(maybe, dict):
+                jd = np.vstack([np.asarray(v).reshape(1,3) for v in maybe.values()])
+        else:
+            try:
+                jd = np.asarray(jf).reshape(-1,3)
+            except Exception:
+                jd = None
+        if jd is not None and jd.size:
+            all_pts.append(jd)
+
+    if all_pts:
+        all_pts = np.vstack(all_pts)
+        # use x_pg = -X, y_pg = Z, z_pg = Y mapping from viewer
+        X = -all_pts[:,0]; Y = all_pts[:,2]; Z = all_pts[:,1]
+        xs = X; ys = Z; zs = Y
+        xmin, xmax = float(np.nanmin(xs)), float(np.nanmax(xs))
+        ymin, ymax = float(np.nanmin(ys)), float(np.nanmax(ys))
+    else:
+        xmin, xmax, ymin, ymax = -1.0, 1.0, -1.0, 1.0
+
+    def proj_to_image(pnts: np.ndarray) -> np.ndarray:
+        # pnts shape (N,3) in Kinect coords (X,Y,Z)
+        if pnts is None or pnts.size == 0:
+            return np.zeros((0,2), dtype=int)
+        pts = np.asarray(pnts, dtype=float).reshape(-1,3)
+        X = -pts[:,0]; Y = pts[:,2]; Z = pts[:,1]
+        xs = X; ys = Z
+        # normalize
+        nx = (xs - xmin) / (xmax - xmin + 1e-9)
+        ny = (ys - ymin) / (ymax - ymin + 1e-9)
+        ix = (nx * (W-1)).astype(int)
+        iy = ((1.0 - ny) * (H-1)).astype(int)
+        return np.vstack([ix, iy]).T
+
+    # Draw each frame
+    for idx in range(nframes):
+        img = np.zeros((H, W, 3), dtype=np.uint8)
+
+        # cloud
+        if idx < len(cloud_frames) and cloud_frames[idx] is not None:
+            cf = np.asarray(cloud_frames[idx]).reshape(-1,3)
+            if cf.size:
+                if cf.shape[0] > max_cloud_points:
+                    sel = np.random.choice(cf.shape[0], max_cloud_points, replace=False)
+                    cf_s = cf[sel]
+                else:
+                    cf_s = cf
+                pts2 = proj_to_image(cf_s)
+                for (x,y) in pts2:
+                    if 0 <= x < W and 0 <= y < H:
+                        img[y, x] = (80,80,80)
+
+        # joints and skeleton
+        if idx < len(joint_frames) and joint_frames[idx] is not None:
+            jf = joint_frames[idx]
+            # normalize to dict of integers->(3,)
+            joints = {}
+            if isinstance(jf, dict):
+                for k,v in jf.items():
+                    try:
+                        joints[int(k)] = np.asarray(v).reshape(3,)
+                    except Exception:
+                        pass
+            elif hasattr(jf, 'item'):
+                maybe = jf.item()
+                if isinstance(maybe, dict):
+                    for k,v in maybe.items():
+                        try:
+                            joints[int(k)] = np.asarray(v).reshape(3,)
+                        except Exception:
+                            pass
+            else:
+                try:
+                    arr = np.asarray(jf).reshape(-1,3)
+                    for irow, row in enumerate(arr):
+                        joints[irow] = row
+                except Exception:
+                    pass
+
+            # draw skeleton lines
+            for (j0,j1) in KINECT_EDGES:
+                if j0 in joints and j1 in joints:
+                    p0 = proj_to_image(joints[j0].reshape(1,3))[0]
+                    p1 = proj_to_image(joints[j1].reshape(1,3))[0]
+                    cv2.line(img, (int(p0[0]), int(p0[1])), (int(p1[0]), int(p1[1])), (0,200,0), 2, cv2.LINE_AA)
+            # draw joints
+            for k,p in joints.items():
+                pt = proj_to_image(p.reshape(1,3))[0]
+                x,y = int(pt[0]), int(pt[1])
+                if 0 <= x < W and 0 <= y < H:
+                    cv2.circle(img, (x,y), 4, (200,200,0), -1, cv2.LINE_AA)
+
+        # footer text
+        cv2.putText(img, f"Frame {idx+1}/{nframes}", (10, H-16), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220,220,220), 1, cv2.LINE_AA)
+
+        vw.write(img)
+
+        if (idx+1) % 50 == 0:
+            print(f"Exportando frame {idx+1}/{nframes}")
+
+    vw.release()
+
+
 def main(argv: list[str] | None = None) -> None:
     if argv is None:
         argv = sys.argv[1:]
 
-    if not argv:
-        print("Uso: python -m src.tools.view_kinect_npz ruta/al/archivo.npz")
+    ap = argparse.ArgumentParser(description="NPZ Kinect viewer and exporter")
+    ap.add_argument("npz", help="Path to .npz file with cloud_frames and joint_frames")
+    ap.add_argument("--export-mp4", dest="out_mp4", default="", help="Export NPZ to MP4 (path). If provided, GUI will not be launched.")
+    ap.add_argument("--fps", type=float, default=None, help="FPS for exported video (default: inferred from timestamps or 30)")
+    ap.add_argument("--size", default="1280x720", help="Output size WxH for MP4 export, e.g. 1280x720")
+    ap.add_argument("--max-cloud", type=int, default=1000, help="Max cloud points to draw per frame (sampled)")
+    args = ap.parse_args(argv)
+
+    npz_path = Path(args.npz)
+    if not npz_path.exists():
+        print(f"NPZ no encontrado: {npz_path}")
         sys.exit(1)
 
+    if args.out_mp4:
+        w,h = (int(x) for x in args.size.split("x")) if "x" in args.size else (1280,720)
+        try:
+            export_npz_to_mp4(npz_path, Path(args.out_mp4), fps=args.fps, size=(w,h), max_cloud_points=args.max_cloud)
+            print(f"Export completo -> {args.out_mp4}")
+        except Exception as e:
+            print(f"Error exportando MP4: {e}")
+        return
+
+    app = QtWidgets.QApplication(sys.argv)
+    w = NpzKinectViewer(npz_path)
+    w.resize(960, 720)
+    w.show()
+    sys.exit(app.exec_())
     npz_path = Path(argv[0])
     if not npz_path.exists():
         print(f"NPZ no encontrado: {npz_path}")
